@@ -1,0 +1,33 @@
+[package]
+name = "parser_service"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+dotenvy = { workspace = true }
+uuid = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Tree-sitter
+tree-sitter = "0.20"
+tree-sitter-python = "0.20"
+tree-sitter-javascript = "0.20"
+tree-sitter-typescript = "0.20"
+tree-sitter-rust = "0.20"
+tree-sitter-java = "0.20"
+
+# MongoDB
+mongodb = { version = "3.1" }
+bson = { version = "2.9", features = ["chrono-0_4", "uuid-1"] }
+
+# HTTP
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors"] }
