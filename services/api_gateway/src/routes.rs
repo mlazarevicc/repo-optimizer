@@ -72,7 +72,15 @@ pub async fn analyze_code_handler(
     let analysis_job_id = Uuid::new_v4();
     tracing::info!("Starting analysis job {} for user {}", analysis_job_id, claims.sub);
 
-    payload["analysis_job_id"] = json!(analysis_job_id);
+    // Bezbedno dodavanje novog ključa u JSON objekat
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("analysis_job_id".to_string(), json!(analysis_job_id));
+    } else {
+        return Err((
+            StatusCode::BAD_REQUEST, 
+            Json(json!({"error": "Payload must be a valid JSON object"}))
+        ));
+    }
     
     let parser_url = env::var("PARSER_SERVICE_URL").unwrap_or_else(|_| "http://localhost:8002".to_string());
     let analysis_url = env::var("ANALYSIS_SERVICE_URL").unwrap_or_else(|_| "http://localhost:8003".to_string());
