@@ -12,3 +12,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dotenvy = { workspace = true }
 anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+mongodb = { version = "3.1" }
+bson = { version = "2.9", features = ["chrono-0_4", "uuid-1"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors"] }
