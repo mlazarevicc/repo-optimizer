@@ -36,6 +36,7 @@ struct FetchedSuggestion {
     id: Uuid,
     problem_id: Uuid,
     explanation: String,
+    original_code: String,
     suggested_code: String,
     impact_score: u8,
 }
@@ -138,7 +139,7 @@ pub async fn get_results_handler(
     if ast_coll.find_one(query.clone(), None).await.unwrap_or(None).is_none() {
         return Ok((StatusCode::OK, Json(json!({
             "status": "PROCESSING",
-            "message": "Kod se učitava i parsira..."
+            "message": "The code is being loaded and parsed..."
         }))));
     }
 
@@ -174,7 +175,7 @@ pub async fn get_results_handler(
     if !problems.is_empty() && suggestions.len() < problems.len() {
         return Ok((StatusCode::OK, Json(json!({
             "status": "PROCESSING",
-            "message": "Analiza je u toku, generišu se rešenja..."
+            "message": "Analysis in progress, generating fix suggestions..."
         }))));
     }
 

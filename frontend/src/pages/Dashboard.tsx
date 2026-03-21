@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Editor from '@monaco-editor/react';
 import { Play, Code2, LogOut, Loader2, AlertCircle } from 'lucide-react';
@@ -6,7 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 
 const SUPPORTED_LANGUAGES = [
-  { id: 'python', name: 'Python', defaultCode: 'def calculate_sum(a, b):\n    # TODO: Implement this function\n    pass\n' },
+  { id: 'python', name: 'Python', defaultCode: 'def process_data():\n    api_key = "AKIAIOSFODNN7EXAMPLE"\n    for i in range(100):\n        for j in range(100):\n            print(i, j)\n' },
   { id: 'javascript', name: 'JavaScript', defaultCode: 'function calculateSum(a, b) {\n    // TODO: Implement this function\n}\n' },
   { id: 'typescript', name: 'TypeScript', defaultCode: 'function calculateSum(a: number, b: number): number {\n    // TODO: Implement this function\n    return 0;\n}\n' },
   { id: 'rust', name: 'Rust', defaultCode: 'fn calculate_sum(a: i32, b: i32) -> i32 {\n    // TODO: Implement this function\n    0\n}\n' },
@@ -20,13 +20,39 @@ const Dashboard = () => {
   const [language, setLanguage] = useState(SUPPORTED_LANGUAGES[0]);
   const [code, setCode] = useState(language.defaultCode);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [pollingMessage, setPollingMessage] = useState('Analyzing...');
   const [error, setError] = useState('');
 
-  const handleLanguageChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const selected = SUPPORTED_LANGUAGES.find(l => l.id === e.target.value) || SUPPORTED_LANGUAGES[0];
-    setLanguage(selected);
-    setCode(selected.defaultCode);
-    setError('');
+  const isMounted = useRef(true);
+
+  useEffect(() => {
+    isMounted.current = true;
+    return () => {
+      isMounted.current = false;
+    };
+  }, []);
+
+  const pollResults = async (jobId: string) => {
+    if (!isMounted.current) return;
+
+    try {
+      const response = await api.get(`/results/${jobId}`);
+      const data = response.data;
+
+      if (data.status === 'COMPLETED') {
+        setIsAnalyzing(false);
+        navigate('/results', { state: { analysisData: data } });
+      } else {
+        setPollingMessage(data.message || 'Processing in background...');
+        
+        setTimeout(() => pollResults(jobId), 2000);
+      }
+    } catch (err: any) {
+      if (isMounted.current) {
+        setIsAnalyzing(false);
+        setError('Failed to fetch analysis results. ' + (err.response?.data?.error || ''));
+      }
+    }
   };
 
   const handleAnalyze = async () => {
@@ -37,6 +63,7 @@ const Dashboard = () => {
 
     setIsAnalyzing(true);
     setError('');
+    setPollingMessage('Submitting code...');
 
     try {
       const response = await api.post('/analyze', {
@@ -44,12 +71,20 @@ const Dashboard = () => {
         code: code,
       });
 
-      navigate('/results', { state: { analysisData: response.data } });
+      const jobId = response.data.analysis_job_id;
+      pollResults(jobId);
+
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Analysis failed. Please check your connection to the server.');
-    } finally {
       setIsAnalyzing(false);
+      setError(err.response?.data?.error || 'Failed to submit analysis job.');
     }
+  };
+
+  const handleLanguageChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const selected = SUPPORTED_LANGUAGES.find(l => l.id === e.target.value) || SUPPORTED_LANGUAGES[0];
+    setLanguage(selected);
+    setCode(selected.defaultCode);
+    setError('');
   };
 
   return (
@@ -81,14 +116,19 @@ const Dashboard = () => {
           <button
             onClick={handleAnalyze}
             disabled={isAnalyzing}
-            className="flex items-center px-4 py-2 bg-primary hover:bg-blue-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
+            className="flex items-center px-4 py-2 bg-primary hover:bg-blue-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 min-w-[160px] justify-center"
           >
             {isAnalyzing ? (
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin shrink-0" />
+                <span className="truncate">{pollingMessage}</span>
+              </>
             ) : (
-              <Play className="w-4 h-4 mr-2" />
+              <>
+                <Play className="w-4 h-4 mr-2" />
+                Run Analysis
+              </>
             )}
-            {isAnalyzing ? 'Analyzing...' : 'Run Analysis'}
           </button>
 
           <div className="h-8 w-px bg-surfaceHighlight"></div>
