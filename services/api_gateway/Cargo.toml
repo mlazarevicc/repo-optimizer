@@ -20,3 +20,7 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "auth"] }
 
 lapin = "2.3"
+
+mongodb = "2.8"
+futures-lite = "1.13"
+bson = "2.0"

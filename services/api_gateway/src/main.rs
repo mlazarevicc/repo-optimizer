@@ -12,6 +12,8 @@ use serde::Serialize;
 use std::{env, net::SocketAddr};
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
+use axum::extract::Path;
+use mongodb::Client as MongoClient;
 
 #[derive(Serialize)]
 struct HealthResponse {
@@ -41,25 +43,33 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(8006);
 
-    let http_client = Client::builder()
+    let http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
-    
+
     let amqp_channel = rabbitmq::setup_rabbitmq()
         .await
         .expect("Failed to connect to RabbitMQ");
 
-    let state = routes::GatewayState { http_client, amqp_channel };
+    let mongodb_url = env::var("MONGODB_URL").unwrap_or_else(|_| "mongodb://repo_optimizer:dev_password@localhost:27017".into());
+    let mongo_client = MongoClient::with_uri_str(&mongodb_url).await?;
+    let db = mongo_client.database("repo_optimizer");
+    tracing::info!("API Gateway connected to MongoDB");
 
-    // Public routes
+    let state = routes::GatewayState { 
+        http_client,
+        amqp_channel,
+        db, 
+    };
+
     let public_routes = Router::new()
         .route("/api/auth/register", post(routes::register_handler))
         .route("/api/auth/login", post(routes::login_handler));
 
-    // Protected routes
     let protected_routes = Router::new()
         .route("/api/analyze", post(routes::analyze_code_handler))
-        .layer(from_fn(middleware::auth_middleware));
+        .route("/api/results/:job_id", get(routes::get_results_handler))
+        .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
     let app = Router::new()
         .route("/health", get(health))
@@ -68,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("api_gateway_service listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
