@@ -24,11 +24,12 @@ impl Language {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct ParseRequest {
     pub code: String,
     pub language: String,
     pub analysis_job_id: Option<Uuid>,
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

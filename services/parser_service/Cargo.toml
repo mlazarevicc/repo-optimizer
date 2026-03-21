@@ -31,3 +31,6 @@ bson = { version = "2.9", features = ["chrono-0_4", "uuid-1"] }
 # HTTP
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors"] }
+
+lapin = "2.3"
+futures-lite = "1.13"
