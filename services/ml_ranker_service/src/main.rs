@@ -1,33 +1,24 @@
 mod ml_engine;
 mod models;
+mod rabbitmq;
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    routing::{get, post},
-    Json, Router,
-};
+use axum::{routing::get, Json, Router};
 use ml_engine::MLEngine;
-use models::{RankRequest, RankResponse, ParsedAst};
+use models::{ParsedAst, Problem};
 use serde::Serialize;
-use std::env;
+use serde_json::Value;
+use std::{env, sync::Arc};
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 
-#[derive(Clone)]
-struct AppState {
-    ml_engine: MLEngine,
+pub struct AppState {
+    pub ml_engine: MLEngine,
 }
 
 #[derive(Serialize)]
 struct HealthResponse {
     status: &'static str,
     service: &'static str,
-}
-
-#[derive(Serialize)]
-struct ErrorResponse {
-    error: String,
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -37,15 +28,25 @@ async fn health() -> Json<HealthResponse> {
     })
 }
 
-async fn rank_problems(
-    State(state): State<AppState>,
-    Json(payload): Json<RankRequest>,
-) -> Result<Json<RankResponse>, (StatusCode, Json<ErrorResponse>)> {
-    tracing::info!("Ranking {} problems", payload.problems.len());
+pub async fn process_ranking(state: &Arc<AppState>, problems_json: Vec<Value>) -> Result<Vec<Value>, String> {
+    tracing::info!("Ranking {} problems", problems_json.len());
 
-    // Dummy AST data (kasnije fetch iz MongoDB)
+    let mut problems: Vec<Problem> = Vec::new();
+    for p in problems_json {
+        match serde_json::from_value::<Problem>(p) {
+            Ok(problem) => problems.push(problem),
+            Err(e) => tracing::error!("Failed to parse problem in ML Ranker: {}", e),
+        }
+    }
+
+    if problems.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let analysis_job_id = problems[0].analysis_job_id;
+
     let dummy_ast = ParsedAst {
-        analysis_job_id: payload.analysis_job_id,
+        analysis_job_id,
         language: models::Language::Python,
         code: "".to_string(),
         metrics: models::CodeMetrics {
@@ -53,7 +54,7 @@ async fn rank_problems(
             code_lines: 80,
             comment_lines: 10,
             blank_lines: 10,
-            total_functions: payload.problems.len() as usize,
+            total_functions: problems.len() as usize,
             total_classes: 0,
             max_nesting_depth: 5,
             cyclomatic_complexity: 15,
@@ -62,13 +63,14 @@ async fn rank_problems(
         classes: vec![],
     };
 
-    let ranked_problems = state.ml_engine.rank_problems(payload.problems, &dummy_ast);
+    let ranked_problems = state.ml_engine.rank_problems(problems, &dummy_ast);
 
-    Ok(Json(RankResponse {
-        analysis_job_id: payload.analysis_job_id,
-        ranked_problems,
-        model_confidence: 0.92,
-    }))
+    let result_json: Vec<Value> = ranked_problems
+        .into_iter()
+        .map(|p| serde_json::to_value(p).unwrap())
+        .collect();
+
+    Ok(result_json)
 }
 
 #[tokio::main]
@@ -82,10 +84,16 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let ml_engine = ml_engine::MLEngine::new();
-
     tracing::info!("ML Ranker Service initialized");
 
-    let state = AppState { ml_engine };
+    let state = Arc::new(AppState { ml_engine });
+
+    let worker_state = state.clone();
+    tokio::spawn(async move {
+        if let Err(e) = rabbitmq::start_worker(worker_state).await {
+            tracing::error!("RabbitMQ worker for ML Ranker crashed: {}", e);
+        }
+    });
 
     let port: u16 = env::var("ML_RANKER_SERVICE_PORT")
         .ok()
@@ -94,12 +102,11 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/health", get(health))
-        .route("/rank", post(rank_problems))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port);
-    tracing::info!("ml_ranker_service listening on {}", addr);
+    tracing::info!("ml_ranker_service HTTP listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
