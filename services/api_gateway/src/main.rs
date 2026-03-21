@@ -1,5 +1,6 @@
 mod middleware;
 mod routes;
+mod rabbitmq;
 
 use axum::{
     middleware::from_fn,
@@ -35,33 +36,35 @@ async fn main() -> anyhow::Result<()> {
         .compact()
         .init();
 
-    // Ispravljeno ime varijable
     let port: u16 = env::var("API_GATEWAY_SERVICE_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8006);
 
-    // HTTP klijent za proxy zahteve sa timeout-om
     let http_client = Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
+    
+    let amqp_channel = rabbitmq::setup_rabbitmq()
+        .await
+        .expect("Failed to connect to RabbitMQ");
 
-    let state = routes::GatewayState { http_client };
+    let state = routes::GatewayState { http_client, amqp_channel };
 
-    // Javne rute (ne treba im token)
+    // Public routes
     let public_routes = Router::new()
         .route("/api/auth/register", post(routes::register_handler))
         .route("/api/auth/login", post(routes::login_handler));
 
-    // Zaštićene rute (treba im token iz Auth servisa)
+    // Protected routes
     let protected_routes = Router::new()
         .route("/api/analyze", post(routes::analyze_code_handler))
         .layer(from_fn(middleware::auth_middleware));
 
     let app = Router::new()
         .route("/health", get(health))
-        .merge(public_routes) // Dodajemo javne rute
-        .merge(protected_routes) // Dodajemo zaštićene rute
+        .merge(public_routes)
+        .merge(protected_routes)
         .layer(CorsLayer::permissive())
         .with_state(state);
 
