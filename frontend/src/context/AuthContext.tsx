@@ -11,6 +11,7 @@ interface AuthContextType {
   login: (token: string, email: string, user_id: string) => void;
   logout: () => void;
   isAuthenticated: boolean;
+  isInitializing: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -18,8 +19,8 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [isInitializing, setIsInitializing] = useState(true);
 
-  // We check if the token already exists in local memory
   useEffect(() => {
     const storedToken = localStorage.getItem('token');
     const storedEmail = localStorage.getItem('email');
@@ -29,6 +30,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setToken(storedToken);
       setUser({ email: storedEmail, user_id: storedUserId });
     }
+    
+    setIsInitializing(false);
   }, []);
 
   const login = (newToken: string, email: string, user_id: string) => {
@@ -48,13 +51,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, login, logout, isAuthenticated: !!token }}>
+    <AuthContext.Provider value={{ user, token, login, logout, isAuthenticated: !!token, isInitializing }}>
       {children}
     </AuthContext.Provider>
   );
 };
 
-// Custom hook for easier use of context
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (context === undefined) {
