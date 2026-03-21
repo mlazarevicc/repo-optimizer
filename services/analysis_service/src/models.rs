@@ -82,7 +82,7 @@ pub struct Problem {
 pub struct AnalyzeRequest {
     pub analysis_job_id: Uuid,
     #[serde(default)]
-    pub user_id: Option<Uuid>, // Za budući auth sistem
+    pub user_id: Option<String>
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -1,25 +1,15 @@
-//! Analysis Service
-//! 
-//! Development Note: 
-//! - Uses test user_id (00000000-0000-0000-0000-000000000001) until auth_service is integrated
-//! - TODO: Replace with actual user_id from JWT token after auth implementation
-
 mod detectors;
 mod models;
+mod rabbitmq; 
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    routing::{get, post},
-    Json, Router,
-};
+use axum::{routing::get, Json, Router};
 use detectors::{
     performance::PerformanceDetector, 
     security::SecurityDetector, 
     smells::SmellDetector, 
     Detector
 };
-use models::{AnalyzeRequest, AnalyzeResponse, ParsedAst, Problem, Severity};
+use models::{ParsedAst, Problem, Severity};
 use mongodb::{
     bson::{doc, Binary, Bson},
     Client, 
@@ -27,28 +17,24 @@ use mongodb::{
 };
 use bson::spec::BinarySubtype;
 use serde::Serialize;
+use serde_json::Value;
 use sqlx::{postgres::PgPoolOptions, PgPool};
-use std::env;
+use std::{env, sync::Arc};
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
-#[derive(Clone)]
-struct AppState {
-    db: PgPool,
-    parsed_asts: Collection<ParsedAst>,
-    problems_collection: Collection<Problem>,
+// Uklonili smo #[derive(Clone)] jer stanje sada delimo preko Arc-a
+pub struct AppState {
+    pub db: PgPool,
+    pub parsed_asts: Collection<ParsedAst>,
+    pub problems_collection: Collection<Problem>,
 }
 
 #[derive(Serialize)]
 struct HealthResponse {
     status: &'static str,
     service: &'static str,
-}
-
-#[derive(Serialize)]
-struct ErrorResponse {
-    error: String,
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -58,13 +44,16 @@ async fn health() -> Json<HealthResponse> {
     })
 }
 
-async fn analyze(
-    State(state): State<AppState>,
-    Json(payload): Json<AnalyzeRequest>,
-) -> Result<Json<AnalyzeResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // 1. Fetch parsed AST from MongoDB
-    let uuid_bytes = payload.analysis_job_id.as_bytes();
+// OVO JE NOVA FUNKCIJA KOJU POZIVA RABBITMQ RADNIK
+pub async fn process_analysis(
+    state: &Arc<AppState>,
+    analysis_job_id: Uuid,
+    user_id: Option<String>,
+) -> Result<Vec<Value>, String> {
     
+    let uuid_bytes = analysis_job_id.as_bytes();
+    
+    // 1. Fetch parsed AST from MongoDB
     let parsed_ast = state
         .parsed_asts
         .find_one(
@@ -76,23 +65,8 @@ async fn analyze(
             }
         )
         .await
-        .map_err(|e| {
-            tracing::error!("MongoDB query error: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Failed to fetch parsed data".to_string(),
-                }),
-            )
-        })?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: "Analysis job not found".to_string(),
-                }),
-            )
-        })?;
+        .map_err(|e| format!("MongoDB query error: {}", e))?
+        .ok_or_else(|| "Analysis job not found".to_string())?;
 
     // 2. Run detectors
     let smell_detector = SmellDetector::new();
@@ -104,66 +78,31 @@ async fn analyze(
     all_problems.extend(performance_detector.detect(&parsed_ast));
     all_problems.extend(security_detector.detect(&parsed_ast));
 
-    // 3. Count by severity
-    let critical_count = all_problems
-        .iter()
-        .filter(|p| matches!(p.severity, Severity::Critical))
-        .count();
-    let high_count = all_problems
-        .iter()
-        .filter(|p| matches!(p.severity, Severity::High))
-        .count();
-    let medium_count = all_problems
-        .iter()
-        .filter(|p| matches!(p.severity, Severity::Medium))
-        .count();
-    let low_count = all_problems
-        .iter()
-        .filter(|p| matches!(p.severity, Severity::Low))
-        .count();
+    let critical_count = all_problems.iter().filter(|p| matches!(p.severity, Severity::Critical)).count();
+    let high_count = all_problems.iter().filter(|p| matches!(p.severity, Severity::High)).count();
+    let medium_count = all_problems.iter().filter(|p| matches!(p.severity, Severity::Medium)).count();
+    let low_count = all_problems.iter().filter(|p| matches!(p.severity, Severity::Low)).count();
 
     tracing::info!(
         "Analysis complete: {} problems (Critical: {}, High: {}, Medium: {}, Low: {})",
-        all_problems.len(),
-        critical_count,
-        high_count,
-        medium_count,
-        low_count
+        all_problems.len(), critical_count, high_count, medium_count, low_count
     );
 
     // 4. Store in databases with proper FK handling
     if !all_problems.is_empty() {
-        // MongoDB: Store full problem data
         state
             .problems_collection
             .insert_many(&all_problems)
             .await
-            .map_err(|e| {
-                tracing::error!("MongoDB insert error: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: "Failed to store problems".to_string(),
-                    }),
-                )
-            })?;
+            .map_err(|e| format!("MongoDB insert error: {}", e))?;
 
-        // Postgres: Use transaction for atomicity
-        let mut tx = state.db.begin().await.map_err(|e| {
-            tracing::error!("Transaction begin error: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Database transaction error".to_string(),
-                }),
-            )
-        })?;
+        let mut tx = state.db.begin().await.map_err(|e| format!("Transaction begin error: {}", e))?;
 
-        // TEST USER ID - za development pre implementacije auth sistema
-        let test_user_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001")
-            .expect("Invalid test user UUID");
+        // Koristimo pravi user_id ako postoji, inače fallback na test usera
+        let db_user_id = user_id
+            .and_then(|id| Uuid::parse_str(&id).ok())
+            .unwrap_or_else(|| Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
 
-        // Step 1: Insert or update analysis_jobs record
         sqlx::query(
             r#"
             INSERT INTO analysis_jobs (id, user_id, status, language, completed_at)
@@ -173,22 +112,13 @@ async fn analyze(
                 completed_at = NOW()
             "#,
         )
-        .bind(payload.analysis_job_id)
-        .bind(test_user_id)
+        .bind(analysis_job_id)
+        .bind(db_user_id)
         .bind(parsed_ast.language.to_string())
         .execute(&mut *tx)
         .await
-        .map_err(|e| {
-            tracing::error!("Postgres analysis_jobs insert error: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Failed to store analysis job".to_string(),
-                }),
-            )
-        })?;
+        .map_err(|e| format!("Postgres analysis_jobs insert error: {}", e))?;
 
-        // Step 2: Insert problems metadata (FK will pass now)
         for problem in &all_problems {
             sqlx::query(
                 r#"
@@ -204,45 +134,20 @@ async fn analyze(
             .bind(problem.line_end as i32)
             .execute(&mut *tx)
             .await
-            .map_err(|e| {
-                tracing::error!("Postgres problems insert error: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: "Failed to store problem metadata".to_string(),
-                    }),
-                )
-            })?;
+            .map_err(|e| format!("Postgres problems insert error: {}", e))?;
         }
 
-        // Commit transaction
-        tx.commit().await.map_err(|e| {
-            tracing::error!("Transaction commit error: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Failed to commit transaction".to_string(),
-                }),
-            )
-        })?;
-
-        tracing::info!(
-            "Successfully stored {} problems in both databases", 
-            all_problems.len()
-        );
+        tx.commit().await.map_err(|e| format!("Transaction commit error: {}", e))?;
+        tracing::info!("Successfully stored {} problems in databases", all_problems.len());
     }
 
-    let total_problems = all_problems.len();
+    // 5. Konvertujemo pronadjene probleme u JSON kako bi ih RabbitMQ poslao dalje
+    let problems_json: Vec<Value> = all_problems
+        .into_iter()
+        .map(|p| serde_json::to_value(p).unwrap())
+        .collect();
 
-    Ok(Json(AnalyzeResponse {
-        analysis_job_id: payload.analysis_job_id,
-        problems: all_problems,
-        total_problems,
-        critical_count,
-        high_count,
-        medium_count,
-        low_count,
-    }))
+    Ok(problems_json)
 }
 
 #[tokio::main]
@@ -269,20 +174,28 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Connected to databases");
 
-    let state = AppState {
+    let state = Arc::new(AppState {
         db,
         parsed_asts,
         problems_collection,
-    };
+    });
+
+    // POKRETANJE RABBITMQ RADNIKA
+    let worker_state = state.clone();
+    tokio::spawn(async move {
+        if let Err(e) = rabbitmq::start_worker(worker_state).await {
+            tracing::error!("RabbitMQ worker for analysis crashed: {}", e);
+        }
+    });
 
     let port: u16 = env::var("ANALYSIS_SERVICE_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8003);
 
+    // Ostaje samo health ruta
     let app = Router::new()
         .route("/health", get(health))
-        .route("/analyze", post(analyze))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
