@@ -1,35 +1,27 @@
-mod models;
 mod suggestions;
+mod models;
+mod rabbitmq;
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    routing::{get, post},
-    Json, Router,
-};
-use models::{SuggestRequest, SuggestResponse, Suggestion};
+use axum::{routing::get, Json, Router};
+use suggestions::SuggestionEngine;
+use models::{RankedProblemPayload, Suggestion};
 use mongodb::{Client, Collection};
 use serde::Serialize;
-use std::{env, net::SocketAddr};
-use suggestions::SuggestionEngine;
+use serde_json::Value;
+use std::{env, sync::Arc};
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
+use uuid::Uuid;
 
-#[derive(Clone)]
-struct AppState {
-    suggestions_collection: Collection<Suggestion>,
-    engine: std::sync::Arc<SuggestionEngine>,
+pub struct AppState {
+    pub suggestion_engine: SuggestionEngine,
+    pub suggestions_collection: Collection<Suggestion>,
 }
 
 #[derive(Serialize)]
 struct HealthResponse {
     status: &'static str,
     service: &'static str,
-}
-
-#[derive(Serialize)]
-struct ErrorResponse {
-    error: String,
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -39,35 +31,38 @@ async fn health() -> Json<HealthResponse> {
     })
 }
 
-async fn generate_suggestions(
-    State(state): State<AppState>,
-    Json(payload): Json<SuggestRequest>,
-) -> Result<Json<SuggestResponse>, (StatusCode, Json<ErrorResponse>)> {
-    tracing::info!("Generating suggestions for {} problems", payload.problems.len());
-
-    let mut suggestions = Vec::new();
-
-    for problem in payload.problems {
-        let suggestion = state.engine.generate(payload.analysis_job_id, &problem);
-        suggestions.push(suggestion);
-    }
-
-    // Čuvanje u MongoDB bazi
-    if !suggestions.is_empty() {
-        if let Err(e) = state.suggestions_collection.insert_many(&suggestions).await {
-            tracing::error!("Failed to save suggestions to db: {}", e);
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse { error: "Database error".to_string() })
-            ));
+pub async fn process_suggestions(
+    state: &Arc<AppState>,
+    analysis_job_id: Uuid,
+    problems_json: Vec<Value>,
+) -> Result<(), String> {
+    
+    let mut ranked_problems: Vec<RankedProblemPayload> = Vec::new();
+    for p in problems_json {
+        if let Ok(problem) = serde_json::from_value::<RankedProblemPayload>(p) {
+            ranked_problems.push(problem);
         }
     }
 
-    Ok(Json(SuggestResponse {
-        analysis_job_id: payload.analysis_job_id,
-        suggestions,
-        success: true,
-    }))
+    if ranked_problems.is_empty() {
+        return Ok(());
+    }
+
+    let mut suggestions = Vec::new();
+    for problem in ranked_problems {
+        let suggestion = state.suggestion_engine.generate(analysis_job_id, &problem);
+        suggestions.push(suggestion);
+    }
+
+    if !suggestions.is_empty() {
+        state
+            .suggestions_collection
+            .insert_many(&suggestions)
+            .await
+            .map_err(|e| format!("MongoDB insert error: {}", e))?;
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -81,31 +76,37 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let mongodb_url = env::var("MONGODB_URL").expect("MONGODB_URL must be set");
-    let client = Client::with_uri_str(&mongodb_url).await?;
-    let db = client.database("repo_optimizer");
-    let suggestions_collection = db.collection::<Suggestion>("suggestions");
+    let db_client = Client::with_uri_str(&mongodb_url).await?;
+    let mongodb = db_client.database("repo_optimizer");
+    let suggestions_collection = mongodb.collection::<Suggestion>("suggestions");
 
-    tracing::info!("Connected to MongoDB");
+    let suggestion_engine = SuggestionEngine::new();
+    tracing::info!("Suggestion Generator Service initialized");
 
-    let state = AppState {
+    let state = Arc::new(AppState { 
+        suggestion_engine,
         suggestions_collection,
-        engine: std::sync::Arc::new(SuggestionEngine::new()),
-    };
+    });
 
-    // Ispravljeno ime environment varijable (dodato 'C' u SERVICE)
-    let port: u16 = env::var("SUGGESTION_GENERATOR_SERVICE_PORT")
+    let worker_state = state.clone();
+    tokio::spawn(async move {
+        if let Err(e) = rabbitmq::start_worker(worker_state).await {
+            tracing::error!("RabbitMQ worker for Suggestion Generator crashed: {}", e);
+        }
+    });
+
+    let port: u16 = env::var("SUGGESTION_SERVICE_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8005);
 
     let app = Router::new()
         .route("/health", get(health))
-        .route("/suggest", post(generate_suggestions))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!("suggestion_generator_service listening on {}", addr);
+    let addr = format!("0.0.0.0:{}", port);
+    tracing::info!("suggestion_generator_service HTTP listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
