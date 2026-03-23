@@ -1,29 +1,13 @@
-use crate::models::{Problem, ProblemFeatures, RankedProblem, ProblemType, ParsedAst};
-use std::collections::HashMap;
+use crate::models::{Problem, ProblemFeatures, RankedProblem, ParsedAst};
 
 #[derive(Debug, Clone)]
 pub struct MLEngine {
-    problem_weights: HashMap<ProblemType, f64>,
     feature_importance: Vec<&'static str>,
 }
 
 impl MLEngine {
     pub fn new() -> Self {
-        let mut weights = HashMap::new();
-        weights.insert(ProblemType::HardcodedSecret, 0.95);
-        weights.insert(ProblemType::SqlInjection, 0.93);
-        weights.insert(ProblemType::XssVulnerability, 0.90);
-        weights.insert(ProblemType::UnoptimizedQuery, 0.75);
-        weights.insert(ProblemType::NestedLoop, 0.70);
-        weights.insert(ProblemType::LongMethod, 0.65);
-        weights.insert(ProblemType::ComplexMethod, 0.60);
-        weights.insert(ProblemType::DeepNesting, 0.55);
-        weights.insert(ProblemType::LongParameterList, 0.50);
-        weights.insert(ProblemType::LargeClass, 0.45);
-        weights.insert(ProblemType::LongFile, 0.40);
-
         Self {
-            problem_weights: weights,
             feature_importance: vec![
                 "is_security", "severity_base", "loc", "cyclomatic_complexity",
                 "nesting_depth", "params_count", "file_size", "position"
@@ -31,67 +15,81 @@ impl MLEngine {
         }
     }
 
-    pub fn extract_features(&self, problem: &Problem, ast_data: &ParsedAst) -> ProblemFeatures {
-        let loc = (problem.line_end - problem.line_start + 1) as f64;
-        let is_security = matches!(
-            problem.problem_type,
-            ProblemType::HardcodedSecret | ProblemType::SqlInjection | ProblemType::XssVulnerability
-        ) as u8 as f64;
-        let is_performance = matches!(
-            problem.problem_type,
-            ProblemType::NestedLoop | ProblemType::UnoptimizedQuery
-        ) as u8 as f64;
+    fn get_problem_weight(&self, problem_type: &str) -> f64 {
+        let pt = problem_type.to_lowercase();
+        if pt.contains("secret") || pt.contains("password") || pt.contains("credential") { return 0.95; }
+        if pt.contains("sql") || pt.contains("injection") { return 0.93; }
+        if pt.contains("xss") || pt.contains("cross-site") { return 0.90; }
+        if pt.contains("security") || pt.contains("vuln") { return 0.85; }
+        if pt.contains("query") || pt.contains("performance") { return 0.75; }
+        if pt.contains("loop") || pt.contains("nesting") { return 0.70; }
+        if pt.contains("long") || pt.contains("complex") || pt.contains("large") { return 0.60; }
+        0.50 // Default weight
+    }
 
+    pub fn extract_features(&self, problem: &Problem, ast_data: &ParsedAst) -> ProblemFeatures {
+        let severity_base = problem.severity.to_score() as f64 / 100.0;
+        let type_weight = self.get_problem_weight(&problem.problem_type);
+
+        let pt = problem.problem_type.to_lowercase();
+        let is_security = if pt.contains("security") || pt.contains("injection") || pt.contains("secret") || pt.contains("xss") {
+            1.0
+        } else {
+            0.0
+        };
+
+        let mut loc = 0.0;
+        let mut cyclomatic_complexity = 0.0;
+        let mut nesting_depth = 0.0;
+        let mut params_count = 0.0;
+
+        for func in &ast_data.functions {
+            if problem.line_start >= func.line_start && problem.line_end <= func.line_end {
+                loc = (func.lines_of_code as f64).min(200.0) / 200.0;
+                cyclomatic_complexity = (func.cyclomatic_complexity as f64).min(50.0) / 50.0;
+                nesting_depth = (func.nesting_depth as f64).min(10.0) / 10.0;
+                params_count = (func.params_count as f64).min(10.0) / 10.0;
+                break;
+            }
+        }
+
+        let file_size = (ast_data.metrics.total_lines as f64).min(5000.0) / 5000.0;
         let position = (problem.line_start as f64) / (ast_data.metrics.total_lines.max(1) as f64);
 
         ProblemFeatures {
+            severity_base,
+            type_weight,
             loc,
-            cyclomatic_complexity: 5.0, // dummy za sada
-            nesting_depth: 3.0,
-            params_count: 2.0,
+            cyclomatic_complexity,
+            nesting_depth,
+            params_count,
+            file_size,
             is_security,
-            is_performance,
-            file_size: ast_data.metrics.total_lines as f64,
             position,
-            severity_base: problem.severity.to_score() as f64 / 100.0,
         }
     }
 
-    pub fn predict_score(&self, features: &ProblemFeatures) -> f64 {
-        // Problem type weight
-        let base_weight = self
-            .problem_weights
-            .get(&ProblemType::LongMethod) // fallback
-            .copied()
-            .unwrap_or(0.5);
+    pub fn predict_score(&self, features: &ProblemFeatures) -> f32 {
+        let score = (features.is_security * 0.30)
+            + (features.severity_base * 0.25)
+            + (features.type_weight * 0.20)
+            + (features.cyclomatic_complexity * 0.10)
+            + (features.nesting_depth * 0.05)
+            + (features.loc * 0.05)
+            + ((1.0 - features.position) * 0.05);
 
-        let mut score = 0.5 * base_weight;
-
-        // Feature multipliers
-        score *= 1.0 + features.is_security * 0.3;
-        score *= 1.0 + features.is_performance * 0.2;
-        score *= 1.0 + features.severity_base * 0.5;
-        score *= 1.0 + (features.loc / 100.0).min(2.0);
-        score *= 1.0 + (features.cyclomatic_complexity / 10.0).min(1.5);
-        score *= 1.0 + (features.nesting_depth / 10.0).min(1.2);
-        score *= 1.0 + (features.params_count / 10.0).min(1.2);
-
-        // Position penalty
-        score *= 1.0 - (features.position * 0.2);
-
-        score.clamp(0.0, 1.0)
+        score.clamp(0.0, 1.0) as f32
     }
 
     pub fn get_feature_importance(&self) -> Vec<(&'static str, f64)> {
         vec![
-            ("is_security", 0.28),
-            ("severity_base", 0.22),
-            ("loc", 0.15),
-            ("cyclomatic_complexity", 0.12),
-            ("nesting_depth", 0.08),
-            ("is_performance", 0.07),
-            ("params_count", 0.05),
-            ("position", 0.03),
+            ("is_security", 0.30),
+            ("severity_base", 0.25),
+            ("type_weight", 0.20),
+            ("cyclomatic_complexity", 0.10),
+            ("loc", 0.05),
+            ("nesting_depth", 0.05),
+            ("position", 0.05),
         ]
     }
 

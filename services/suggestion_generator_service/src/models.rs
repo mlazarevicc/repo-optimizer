@@ -2,18 +2,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProblemType {
-    LongMethod, LongParameterList, DeepNesting, LargeClass, DuplicateCode,
-    ComplexMethod, UnusedVariable, MagicNumber, LongFile, NestedLoop,
-    UnoptimizedQuery, HardcodedSecret, SqlInjection, XssVulnerability,
-}
 
 #[derive(Debug, Deserialize)]
 pub struct RankedProblemPayload {
     pub id: Uuid,
-    pub problem_type: ProblemType,
+    pub problem_type: String,
     pub code_snippet: String,
 }
 
@@ -28,7 +21,7 @@ pub struct Suggestion {
     pub id: Uuid,
     pub problem_id: Uuid,
     pub analysis_job_id: Uuid,
-    pub problem_type: ProblemType,
+    pub problem_type: String,
     pub explanation: String,
     pub original_code: String,
     pub suggested_code: String,

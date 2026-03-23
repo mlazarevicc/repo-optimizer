@@ -2,25 +2,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum ProblemType {
-    LongMethod,
-    LongParameterList,
-    DeepNesting,
-    LargeClass,
-    DuplicateCode,
-    ComplexMethod,
-    UnusedVariable,
-    MagicNumber,
-    LongFile,
-    NestedLoop,
-    UnoptimizedQuery,
-    HardcodedSecret,
-    SqlInjection,
-    XssVulnerability,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -45,7 +26,7 @@ impl Severity {
 pub struct Problem {
     pub id: Uuid,
     pub analysis_job_id: Uuid,
-    pub problem_type: ProblemType,
+    pub problem_type: String,
     pub severity: Severity,
     pub line_start: usize,
     pub line_end: usize,
@@ -64,31 +45,20 @@ pub struct RankRequest {
 pub struct RankResponse {
     pub analysis_job_id: Uuid,
     pub ranked_problems: Vec<RankedProblem>,
-    pub model_confidence: f64,
+    pub model_confidence: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RankedProblem {
     pub id: Uuid,
-    pub problem_type: ProblemType,
+    pub problem_type: String,
     pub severity: Severity,
-    pub rank_score: f64,
     pub line_start: usize,
     pub line_end: usize,
     pub message: String,
     pub code_snippet: String,
+    pub rank_score: f32,
     pub feature_importance: Vec<f64>,
-}
-
-// Dummy ParsedAst za MVP
-#[derive(Debug, Clone)]
-pub struct ParsedAst {
-    pub analysis_job_id: Uuid,
-    pub language: Language,
-    pub code: String,
-    pub metrics: CodeMetrics,
-    pub functions: Vec<FunctionInfo>,
-    pub classes: Vec<ClassInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +69,16 @@ pub enum Language {
     TypeScript,
     Rust,
     Java,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParsedAst {
+    pub analysis_job_id: Uuid,
+    pub language: Language,
+    pub code: String,
+    pub metrics: CodeMetrics,
+    pub functions: Vec<FunctionInfo>,
+    pub classes: Vec<ClassInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,13 +115,13 @@ pub struct ClassInfo {
 
 #[derive(Debug, Clone)]
 pub struct ProblemFeatures {
+    pub severity_base: f64,
+    pub type_weight: f64,
     pub loc: f64,
     pub cyclomatic_complexity: f64,
     pub nesting_depth: f64,
     pub params_count: f64,
-    pub is_security: f64,
-    pub is_performance: f64,
     pub file_size: f64,
+    pub is_security: f64,
     pub position: f64,
-    pub severity_base: f64,
 }

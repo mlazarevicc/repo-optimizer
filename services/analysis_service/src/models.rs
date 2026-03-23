@@ -69,7 +69,7 @@ impl Severity {
 pub struct Problem {
     pub id: Uuid,
     pub analysis_job_id: Uuid,
-    pub problem_type: ProblemType,
+    pub problem_type: String, 
     pub severity: Severity,
     pub line_start: usize,
     pub line_end: usize,

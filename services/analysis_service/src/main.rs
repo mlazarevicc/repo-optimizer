@@ -1,14 +1,15 @@
 mod detectors;
 mod models;
 mod rabbitmq; 
+mod semgrep;
 
 use axum::{routing::get, Json, Router};
-use detectors::{
-    performance::PerformanceDetector, 
-    security::SecurityDetector, 
-    smells::SmellDetector, 
-    Detector
-};
+// use detectors::{
+//     performance::PerformanceDetector, 
+//     security::SecurityDetector, 
+//     smells::SmellDetector, 
+//     Detector
+// };
 use models::{ParsedAst, Problem, Severity};
 use mongodb::{
     bson::{doc, Binary, Bson},
@@ -69,14 +70,10 @@ pub async fn process_analysis(
         .ok_or_else(|| "Analysis job not found".to_string())?;
 
     // 2. Run detectors
-    let smell_detector = SmellDetector::new();
-    let performance_detector = PerformanceDetector::new();
-    let security_detector = SecurityDetector::new();
-
-    let mut all_problems: Vec<Problem> = Vec::new();
-    all_problems.extend(smell_detector.detect(&parsed_ast));
-    all_problems.extend(performance_detector.detect(&parsed_ast));
-    all_problems.extend(security_detector.detect(&parsed_ast));
+// 2. Run Semgrep analysis
+    let language_str = parsed_ast.language.to_string();
+    let all_problems = semgrep::run_scan(&parsed_ast.code, &language_str, analysis_job_id)
+        .map_err(|e| format!("Semgrep failed: {}", e))?;
 
     let critical_count = all_problems.iter().filter(|p| matches!(p.severity, Severity::Critical)).count();
     let high_count = all_problems.iter().filter(|p| matches!(p.severity, Severity::High)).count();
@@ -128,7 +125,7 @@ pub async fn process_analysis(
             )
             .bind(problem.id)
             .bind(problem.analysis_job_id)
-            .bind(format!("{:?}", problem.problem_type))
+            .bind(problem.problem_type.clone())
             .bind(format!("{:?}", problem.severity))
             .bind(problem.line_start as i32)
             .bind(problem.line_end as i32)
