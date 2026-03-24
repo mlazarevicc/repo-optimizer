@@ -47,7 +47,7 @@ impl LanguageParser for PythonParser {
                     .unwrap_or(0);
 
                 let cyclomatic_complexity = calculate_cyclomatic_complexity(&node);
-                let nesting_depth = calculate_nesting_depth(&node, std::str::from_utf8(code_bytes).unwrap_or(""));
+                let nesting_depth = calculate_nesting_depth(&node);
 
                 functions.push(FunctionInfo {
                     name,

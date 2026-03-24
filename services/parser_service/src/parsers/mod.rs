@@ -37,9 +37,8 @@ pub fn count_lines(code: &str) -> (usize, usize, usize) {
     (total, code_lines, blank)
 }
 
-pub fn calculate_nesting_depth(node: &tree_sitter::Node, code: &str) -> usize {
+pub fn calculate_nesting_depth(node: &tree_sitter::Node) -> usize {
     let mut max_depth = 0;
-    let mut current_depth = 0;
 
     fn traverse(node: &tree_sitter::Node, depth: usize, max: &mut usize) {
         if depth > *max {
@@ -47,11 +46,13 @@ pub fn calculate_nesting_depth(node: &tree_sitter::Node, code: &str) -> usize {
         }
 
         let kind = node.kind();
-        let new_depth = if kind.contains("statement") 
-            || kind.contains("block") 
-            || kind.contains("if") 
-            || kind.contains("for") 
-            || kind.contains("while") {
+        
+        let new_depth = if kind == "if_statement" 
+            || kind == "for_statement" 
+            || kind == "while_statement" 
+            || kind == "try_statement"
+            || kind == "catch_clause" 
+            || kind == "with_statement" {
             depth + 1
         } else {
             depth
@@ -68,19 +69,21 @@ pub fn calculate_nesting_depth(node: &tree_sitter::Node, code: &str) -> usize {
 }
 
 pub fn calculate_cyclomatic_complexity(node: &tree_sitter::Node) -> usize {
-    let mut complexity = 1; // Base complexity
+    let mut complexity = 1;
 
     fn traverse(node: &tree_sitter::Node, complexity: &mut usize) {
         let kind = node.kind();
         
-        // Increment for decision points
         if kind == "if_statement" 
             || kind == "for_statement"
             || kind == "while_statement"
             || kind == "case"
             || kind == "catch_clause"
             || kind == "conditional_expression"
-            || kind == "binary_operator" && (node.kind() == "&&" || node.kind() == "||") {
+            || kind == "boolean_operator"        // Python (and, or)
+            || kind == "logical_expression"      // JS/TS (&&, ||)
+            || kind == "lazy_boolean_expression" // Rust (&&, ||)
+        {
             *complexity += 1;
         }
 

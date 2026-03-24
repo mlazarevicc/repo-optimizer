@@ -75,16 +75,18 @@ pub async fn process_analysis(
         Ok(problems) => problems,
         Err(e) => {
             tracing::warn!("Semgrep failed, proceeding with AST detectors only. Error: {}", e);
-            Vec::new() // Ako Semgrep pukne, nastavljamo bar sa AST detektorima
+            Vec::new() 
         }
     };
 
-    // 3. Dodajemo naše AST Detektore za arhitektonske "Code Smells" i performanse
+    // 3. Adding our AST Detectors for architectural "Code Smells", performance, security
     let smell_detector = SmellDetector::new();
     let performance_detector = PerformanceDetector::new();
+    let security_detector = detectors::security::SecurityDetector::new();
 
     all_problems.extend(smell_detector.detect(&parsed_ast));
     all_problems.extend(performance_detector.detect(&parsed_ast));
+    all_problems.extend(security_detector.detect(&parsed_ast));
 
     let critical_count = all_problems.iter().filter(|p| matches!(p.severity, Severity::Critical)).count();
     let high_count = all_problems.iter().filter(|p| matches!(p.severity, Severity::High)).count();
@@ -106,7 +108,6 @@ pub async fn process_analysis(
 
         let mut tx = state.db.begin().await.map_err(|e| format!("Transaction begin error: {}", e))?;
 
-        // Koristimo pravi user_id ako postoji, inače fallback na test usera
         let db_user_id = user_id
             .and_then(|id| Uuid::parse_str(&id).ok())
             .unwrap_or_else(|| Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());

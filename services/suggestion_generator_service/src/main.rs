@@ -45,22 +45,20 @@ pub async fn process_suggestions(
         }
     }
 
-    if ranked_problems.is_empty() {
-        return Ok(());
-    }
+    if !ranked_problems.is_empty() {
+        let mut suggestions = Vec::new();
+        for problem in ranked_problems {
+            let suggestion = state.suggestion_engine.generate(analysis_job_id, &problem);
+            suggestions.push(suggestion);
+        }
 
-    let mut suggestions = Vec::new();
-    for problem in ranked_problems {
-        let suggestion = state.suggestion_engine.generate(analysis_job_id, &problem);
-        suggestions.push(suggestion);
-    }
-
-    if !suggestions.is_empty() {
-        state
-            .suggestions_collection
-            .insert_many(&suggestions)
-            .await
-            .map_err(|e| format!("MongoDB insert error: {}", e))?;
+        if !suggestions.is_empty() {
+            state
+                .suggestions_collection
+                .insert_many(&suggestions)
+                .await
+                .map_err(|e| format!("MongoDB insert error: {}", e))?;
+        }
     }
 
     let query = mongodb::bson::doc! { "analysis_job_id": analysis_job_id.to_string() };
