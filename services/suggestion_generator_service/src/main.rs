@@ -16,6 +16,7 @@ use uuid::Uuid;
 pub struct AppState {
     pub suggestion_engine: SuggestionEngine,
     pub suggestions_collection: Collection<Suggestion>,
+    pub job_status_collection: Collection<mongodb::bson::Document>
 }
 
 #[derive(Serialize)]
@@ -62,6 +63,10 @@ pub async fn process_suggestions(
             .map_err(|e| format!("MongoDB insert error: {}", e))?;
     }
 
+    let query = mongodb::bson::doc! { "analysis_job_id": analysis_job_id.to_string() };
+    let update = mongodb::bson::doc! { "$set": { "status": "COMPLETED" } };
+    let _ = state.job_status_collection.update_one(query, update).await;
+
     Ok(())
 }
 
@@ -79,6 +84,7 @@ async fn main() -> anyhow::Result<()> {
     let db_client = Client::with_uri_str(&mongodb_url).await?;
     let mongodb = db_client.database("repo_optimizer");
     let suggestions_collection = mongodb.collection::<Suggestion>("suggestions");
+    let job_status_collection = mongodb.collection::<mongodb::bson::Document>("job_status");
 
     let suggestion_engine = SuggestionEngine::new();
     tracing::info!("Suggestion Generator Service initialized");
@@ -86,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState { 
         suggestion_engine,
         suggestions_collection,
+        job_status_collection,
     });
 
     let worker_state = state.clone();

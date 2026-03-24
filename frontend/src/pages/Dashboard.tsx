@@ -6,7 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 
 const SUPPORTED_LANGUAGES = [
-  { id: 'python', name: 'Python', defaultCode: 'def process_data():\n    api_key = "AKIAIOSFODNN7EXAMPLE"\n    for i in range(100):\n        for j in range(100):\n            print(i, j)\n' },
+  { id: 'python', name: 'Python', defaultCode: 'def calculate_sum(a, b):\n    # TODO: Implement this function\n    pass\n' },
   { id: 'javascript', name: 'JavaScript', defaultCode: 'function calculateSum(a, b) {\n    // TODO: Implement this function\n}\n' },
   { id: 'typescript', name: 'TypeScript', defaultCode: 'function calculateSum(a: number, b: number): number {\n    // TODO: Implement this function\n    return 0;\n}\n' },
   { id: 'rust', name: 'Rust', defaultCode: 'fn calculate_sum(a: i32, b: i32) -> i32 {\n    // TODO: Implement this function\n    0\n}\n' },

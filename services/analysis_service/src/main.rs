@@ -4,12 +4,12 @@ mod rabbitmq;
 mod semgrep;
 
 use axum::{routing::get, Json, Router};
-// use detectors::{
-//     performance::PerformanceDetector, 
-//     security::SecurityDetector, 
-//     smells::SmellDetector, 
-//     Detector
-// };
+use detectors::{
+    performance::PerformanceDetector, 
+    security::SecurityDetector, 
+    smells::SmellDetector, 
+    Detector
+};
 use models::{ParsedAst, Problem, Severity};
 use mongodb::{
     bson::{doc, Binary, Bson},
@@ -70,10 +70,21 @@ pub async fn process_analysis(
         .ok_or_else(|| "Analysis job not found".to_string())?;
 
     // 2. Run detectors
-// 2. Run Semgrep analysis
     let language_str = parsed_ast.language.to_string();
-    let all_problems = semgrep::run_scan(&parsed_ast.code, &language_str, analysis_job_id)
-        .map_err(|e| format!("Semgrep failed: {}", e))?;
+    let mut all_problems = match semgrep::run_scan(&parsed_ast.code, &language_str, analysis_job_id) {
+        Ok(problems) => problems,
+        Err(e) => {
+            tracing::warn!("Semgrep failed, proceeding with AST detectors only. Error: {}", e);
+            Vec::new() // Ako Semgrep pukne, nastavljamo bar sa AST detektorima
+        }
+    };
+
+    // 3. Dodajemo naše AST Detektore za arhitektonske "Code Smells" i performanse
+    let smell_detector = SmellDetector::new();
+    let performance_detector = PerformanceDetector::new();
+
+    all_problems.extend(smell_detector.detect(&parsed_ast));
+    all_problems.extend(performance_detector.detect(&parsed_ast));
 
     let critical_count = all_problems.iter().filter(|p| matches!(p.severity, Severity::Critical)).count();
     let high_count = all_problems.iter().filter(|p| matches!(p.severity, Severity::High)).count();

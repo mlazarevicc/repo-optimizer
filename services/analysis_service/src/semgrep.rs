@@ -29,8 +29,9 @@ pub fn run_scan(code: &str, language: &str, analysis_job_id: Uuid) -> Result<Vec
     let output = Command::new("semgrep")
         .arg("scan")
         .arg("--json")
-        .arg("--config")
-        .arg("auto")
+        .arg("--config=p/default") // Use the standard predefined ruleset instead of 'auto'
+        .arg("--metrics=off")      // Stop sending telemetry to Semgrep servers
+        .arg("--disable-version-check") // Turn off internet version checking
         .arg(temp_path)
         .output()
         .map_err(|e| format!("Failed to execute semgrep. Is it installed on the system? Error: {}", e))?;

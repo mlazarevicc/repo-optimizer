@@ -57,6 +57,12 @@ const Results = () => {
     }
   };
 
+  const formatProblemTitle = (rawType: string) => {
+    const parts = rawType.split('.');
+    const lastPart = parts[parts.length - 1];
+    return lastPart.replace(/[-_]/g, ' ').toUpperCase();
+  };
+
   return (
     <div className="min-h-screen bg-background flex flex-col text-gray-100">
       {/* Header */}
@@ -133,7 +139,7 @@ const Results = () => {
                       {getSeverityIcon(issue.severity)}
                       <div>
                         <p className="font-medium text-sm text-gray-200 truncate pr-4">
-                          {issue.problem_type.replace(/_/g, ' ').toUpperCase()}
+                          {formatProblemTitle(issue.problem_type)}
                         </p>
                         <p className="text-xs text-gray-500 mt-1">Line {issue.line_start}</p>
                       </div>

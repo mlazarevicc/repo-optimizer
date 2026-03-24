@@ -97,11 +97,14 @@ pub async fn analyze_code_handler(
         obj.insert("analysis_job_id".to_string(), json!(analysis_job_id));
         obj.insert("user_id".to_string(), json!(claims.sub));
     } else {
-        return Err((
-            StatusCode::BAD_REQUEST, 
-            Json(json!({"error": "Payload must be a valid JSON object"}))
-        ));
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "Payload must be a valid JSON object"}))));
     }
+
+    let status_coll = state.db.collection::<mongodb::bson::Document>("job_status");
+    let _ = status_coll.insert_one(doc! {
+        "analysis_job_id": analysis_job_id.to_string(),
+        "status": "PROCESSING"
+    }, None).await;
 
     match crate::rabbitmq::publish_job(&state.amqp_channel, &payload).await {
         Ok(_) => {
@@ -126,6 +129,17 @@ pub async fn get_results_handler(
     Extension(_claims): Extension<Claims>,
     Path(job_id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
+    
+    let status_coll = state.db.collection::<mongodb::bson::Document>("job_status");
+    if let Ok(Some(status_doc)) = status_coll.find_one(doc! { "analysis_job_id": job_id.to_string() }, None).await {
+        if status_doc.get_str("status").unwrap_or("") == "PROCESSING" {
+            tracing::info!("Job still processing in background. Returning PROCESSING.");
+            return Ok((StatusCode::OK, Json(json!({
+                "status": "PROCESSING",
+                "message": "Semgrep security analysis is in progress, please wait..."
+            }))));
+        }
+    }
     
     let uuid_bytes = job_id.as_bytes();
     let query = doc! {
