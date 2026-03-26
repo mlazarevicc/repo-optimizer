@@ -71,7 +71,7 @@ pub enum Language {
     Java,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedAst {
     pub analysis_job_id: Uuid,
     pub language: Language,

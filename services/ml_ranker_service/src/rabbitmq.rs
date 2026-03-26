@@ -39,30 +39,39 @@ pub async fn start_worker(state: Arc<AppState>) -> Result<(), lapin::Error> {
                 Ok(job) => {
                     tracing::info!("Processing rank job: {}", job.analysis_job_id);
 
-                    if let Ok(ranked_problems) = crate::process_ranking(&state, job.problems).await {
-                        
-                        let next_job = json!({
-                            "analysis_job_id": job.analysis_job_id,
-                            "problems": ranked_problems,
-                        });
+                    match crate::process_ranking(&state, job.problems).await {
+                        Ok(ranked_problems) => {
+                            let next_job = json!({
+                                "analysis_job_id": job.analysis_job_id,
+                                "problems": ranked_problems,
+                            });
 
-                        let _ = channel
-                            .basic_publish(
-                                "",
-                                "suggest_queue",
-                                BasicPublishOptions::default(),
-                                &serde_json::to_vec(&next_job).unwrap(),
-                                BasicProperties::default(),
-                            )
-                            .await;
+                            let _ = channel
+                                .basic_publish(
+                                    "",
+                                    "suggest_queue",
+                                    BasicPublishOptions::default(),
+                                    &serde_json::to_vec(&next_job).unwrap(),
+                                    BasicProperties::default(),
+                                )
+                                .await;
+                                
+                            tracing::info!("Job {} successfully ranked and sent to suggest_queue", job.analysis_job_id);
                             
-                        tracing::info!("Job {} successfully ranked and sent to suggest_queue", job.analysis_job_id);
+                            let _ = delivery.ack(BasicAckOptions::default()).await;
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to process ranking for job {}: {}", job.analysis_job_id, e);
+                        
+                            let _ = delivery.nack(BasicNackOptions { multiple: false, requeue: false }).await;
+                        }
                     }
                 }
-                Err(e) => tracing::error!("Failed to deserialize RabbitMQ message: {}", e),
+                Err(e) => {
+                    tracing::error!("Failed to deserialize RabbitMQ message: {}", e);
+                    let _ = delivery.nack(BasicNackOptions { multiple: false, requeue: false }).await;
+                }
             }
-
-            let _ = delivery.ack(BasicAckOptions::default()).await;
         }
     }
 
