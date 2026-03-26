@@ -126,77 +126,94 @@ pub async fn analyze_code_handler(
 
 pub async fn get_results_handler(
     State(state): State<GatewayState>,
-    Extension(_claims): Extension<Claims>,
-    Path(job_id): Path<Uuid>,
+    Path(job_id_str): Path<String>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
     
-    let status_coll = state.db.collection::<mongodb::bson::Document>("job_status");
-    if let Ok(Some(status_doc)) = status_coll.find_one(doc! { "analysis_job_id": job_id.to_string() }, None).await {
-        if status_doc.get_str("status").unwrap_or("") == "PROCESSING" {
-            tracing::info!("Job still processing in background. Returning PROCESSING.");
-            return Ok((StatusCode::OK, Json(json!({
-                "status": "PROCESSING",
-                "message": "Semgrep security analysis is in progress, please wait..."
-            }))));
+    let job_id = match Uuid::parse_str(&job_id_str) {
+        Ok(id) => id,
+        Err(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "Invalid job_id format. Must be a valid UUID." })),
+            ));
         }
-    }
-    
-    let uuid_bytes = job_id.as_bytes();
-    let query = doc! {
-        "analysis_job_id": Bson::Binary(Binary {
-            subtype: BinarySubtype::Generic,
-            bytes: uuid_bytes.to_vec(),
-        })
     };
 
-    let ast_coll = state.db.collection::<mongodb::bson::Document>("parsed_asts");
-    if ast_coll.find_one(query.clone(), None).await.unwrap_or(None).is_none() {
-        return Ok((StatusCode::OK, Json(json!({
-            "status": "PROCESSING",
-            "message": "The code is being loaded and parsed..."
-        }))));
-    }
-
-    let mut problems = Vec::new();
     let prob_coll = state.db.collection::<mongodb::bson::Document>("problems");
-    let mut cursor = prob_coll.find(query.clone(), None).await.unwrap();
-    
-    let mut critical_count = 0; let mut high_count = 0;
-    let mut medium_count = 0; let mut low_count = 0;
-
-    while let Some(Ok(doc)) = cursor.next().await {
-        if let Ok(p) = mongodb::bson::from_document::<FetchedProblem>(doc) {
-            match p.severity.to_lowercase().as_str() {
-                "critical" => critical_count += 1,
-                "high" => high_count += 1,
-                "medium" => medium_count += 1,
-                _ => low_count += 1,
-            }
-            problems.push(p);
-        }
-    }
-
-    let mut suggestions = Vec::new();
     let sugg_coll = state.db.collection::<mongodb::bson::Document>("suggestions");
-    let mut sugg_cursor = sugg_coll.find(query.clone(), None).await.unwrap();
-    
-    while let Some(Ok(doc)) = sugg_cursor.next().await {
-        if let Ok(s) = mongodb::bson::from_document::<FetchedSuggestion>(doc) {
-            suggestions.push(s);
+
+    let uuid_bytes = job_id.into_bytes();
+    let query = doc! { 
+        "analysis_job_id": Binary { 
+            subtype: BinarySubtype::Generic, 
+            bytes: uuid_bytes.to_vec() 
+        } 
+    };
+
+    let mut problems: Vec<FetchedProblem> = Vec::new();
+    let mut suggestions: Vec<FetchedSuggestion> = Vec::new();
+
+    match prob_coll.find(query.clone(), None).await {
+        Ok(mut prob_cursor) => {
+            while let Some(Ok(doc)) = prob_cursor.next().await {
+                if let Ok(p) = mongodb::bson::from_document::<FetchedProblem>(doc) {
+                    problems.push(p);
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!("Database error while fetching problems: {}", e);
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Database error" }))));
         }
     }
 
-    if !problems.is_empty() && suggestions.len() < problems.len() {
-        return Ok((StatusCode::OK, Json(json!({
-            "status": "PROCESSING",
-            "message": "Analysis in progress, generating fix suggestions..."
-        }))));
+    if problems.is_empty() {
+        return Ok((
+            StatusCode::OK,
+            Json(json!({
+                "status": "PROCESSING",
+                "message": "Job is still processing or no problems were found."
+            })),
+        ));
     }
 
-    let ranked_issues: Vec<Value> = problems.into_iter().map(|p| {
+    match sugg_coll.find(query.clone(), None).await {
+        Ok(mut sugg_cursor) => {
+            while let Some(Ok(doc)) = sugg_cursor.next().await {
+                if let Ok(s) = mongodb::bson::from_document::<FetchedSuggestion>(doc) {
+                    suggestions.push(s);
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!("Database error while fetching suggestions: {}", e);
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Database error" }))));
+        }
+    }
+
+    if suggestions.len() < problems.len() {
+        return Ok((
+            StatusCode::OK,
+            Json(json!({
+                "status": "PROCESSING",
+                "message": format!("Analysis completed. Generating fix suggestions... ({}/{})", suggestions.len(), problems.len())
+            })),
+        ));
+    }
+
+    let mut critical_count = 0;
+    let mut high_count = 0;
+    let mut medium_count = 0;
+    let mut low_count = 0;
+
+    let ranked_issues: Vec<Value> = problems.iter().map(|p| {
         let rank_score = match p.severity.to_lowercase().as_str() {
-            "critical" => 0.95, "high" => 0.75, "medium" => 0.50, _ => 0.25,
+            "critical" => { critical_count += 1; 0.95 },
+            "high" => { high_count += 1; 0.75 },
+            "medium" => { medium_count += 1; 0.50 },
+            _ => { low_count += 1; 0.25 },
         };
+        
         json!({
             "id": p.id,
             "problem_type": p.problem_type,
@@ -209,17 +226,31 @@ pub async fn get_results_handler(
         })
     }).collect();
 
-    Ok((StatusCode::OK, Json(json!({
-        "analysis_job_id": job_id,
-        "status": "COMPLETED",
-        "summary": {
-            "critical_count": critical_count,
-            "high_count": high_count,
-            "medium_count": medium_count,
-            "low_count": low_count,
-            "total_problems": ranked_issues.len()
-        },
-        "ranked_issues": ranked_issues,
-        "suggestions": suggestions
-    }))))
+    let suggestions_json: Vec<Value> = suggestions.into_iter().map(|s| {
+        json!({
+            "id": s.id,
+            "problem_id": s.problem_id,
+            "explanation": s.explanation,
+            "original_code": s.original_code,
+            "suggested_code": s.suggested_code,
+            "impact_score": s.impact_score
+        })
+    }).collect();
+
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "analysis_job_id": job_id,
+            "status": "COMPLETED",
+            "summary": {
+                "critical_count": critical_count,
+                "high_count": high_count,
+                "medium_count": medium_count,
+                "low_count": low_count,
+                "total_problems": problems.len()
+            },
+            "ranked_issues": ranked_issues,
+            "suggestions": suggestions_json
+        })),
+    ))
 }
