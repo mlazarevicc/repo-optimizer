@@ -17,7 +17,6 @@ uuid = { workspace = true }
 regex = "1"
 
 # Database
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono"] }
 mongodb = { version = "3.1" }
 bson = { version = "2.9", features = ["chrono-0_4", "uuid-1"] }
 chrono = { version = "0.4", features = ["serde"] }
