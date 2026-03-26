@@ -38,16 +38,22 @@ pub async fn start_worker(state: Arc<AppState>) -> Result<(), lapin::Error> {
                 Ok(job) => {
                     tracing::info!("Generating suggestions for job: {}", job.analysis_job_id);
 
-                    if let Err(e) = crate::process_suggestions(&state, job.analysis_job_id, job.problems).await {
-                        tracing::error!("Failed to process suggestions: {}", e);
-                    } else {
-                        tracing::info!("Job {} fully completed and saved to DB!", job.analysis_job_id);
+                    match crate::process_suggestions(&state, job.analysis_job_id, job.problems).await {
+                        Ok(_) => {
+                            tracing::info!("Job {} fully completed and saved to DB!", job.analysis_job_id);
+                            let _ = delivery.ack(BasicAckOptions::default()).await;
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to process suggestions for job {}: {}", job.analysis_job_id, e);
+                            let _ = delivery.nack(BasicNackOptions { multiple: false, requeue: false }).await;
+                        }
                     }
                 }
-                Err(e) => tracing::error!("Failed to deserialize RabbitMQ message: {}", e),
+                Err(e) => {
+                    tracing::error!("Failed to deserialize RabbitMQ message: {}", e);
+                    let _ = delivery.nack(BasicNackOptions { multiple: false, requeue: false }).await;
+                }
             }
-
-            let _ = delivery.ack(BasicAckOptions::default()).await;
         }
     }
 
