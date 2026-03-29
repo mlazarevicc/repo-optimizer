@@ -1,6 +1,7 @@
 mod middleware;
 mod routes;
 mod rabbitmq;
+mod scanner;
 
 use axum::{
     middleware::from_fn,
@@ -68,6 +69,8 @@ async fn main() -> anyhow::Result<()> {
 
     let protected_routes = Router::new()
         .route("/api/analyze", post(routes::analyze_code_handler))
+        .route("/api/analyze/git", post(routes::analyze_git_handler))
+        .route("/api/analyze/zip", post(routes::analyze_zip_handler))
         .route("/api/results/:job_id", get(routes::get_results_handler))
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 

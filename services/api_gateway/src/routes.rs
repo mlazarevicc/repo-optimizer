@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Extension, State},
+    extract::{Extension, State, Path, Multipart},
     http::StatusCode,
     Json,
 };
@@ -8,10 +8,11 @@ use serde_json::{json, Value};
 use std::env;
 use uuid::Uuid;
 use crate::middleware::Claims;
-use axum::extract::Path;
 use futures_lite::stream::StreamExt;
 use mongodb::{bson::{doc, Bson, Binary}, Database};
 use bson::spec::BinarySubtype;
+use tempfile::tempdir;
+use git2::Repository;
 
 #[derive(Clone)]
 pub struct GatewayState {
@@ -39,6 +40,11 @@ struct FetchedSuggestion {
     original_code: String,
     suggested_code: String,
     impact_score: u8,
+}
+
+#[derive(serde::Deserialize)]
+pub struct GitAnalyzeRequest {
+    pub repo_url: String,
 }
 
 fn convert_status(reqwest_status: reqwest::StatusCode) -> StatusCode {
@@ -122,6 +128,97 @@ pub async fn analyze_code_handler(
             ))
         }
     }
+}
+
+pub async fn analyze_git_handler(
+    State(state): State<GatewayState>,
+    Extension(claims): Extension<Claims>,
+    Json(payload): Json<GitAnalyzeRequest>,
+) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
+    let job_id = Uuid::new_v4();
+    
+    let dir = tempdir().map_err(|_| {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to create temp directory"})))
+    })?;
+
+    let repo_url = payload.repo_url.clone();
+    let path = dir.path().to_owned();
+
+    let clone_result = tokio::task::spawn_blocking(move || {
+        Repository::clone(&repo_url, &path)
+    }).await.unwrap();
+
+    if clone_result.is_err() {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "Failed to clone git repository. Ensure it is public."}))));
+    }
+
+    let files_sent = crate::scanner::scan_directory_and_publish(
+        dir.path(),
+        job_id,
+        Some(claims.sub),
+        &state.amqp_channel
+    ).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))))?;
+
+    Ok((StatusCode::ACCEPTED, Json(json!({
+        "analysis_job_id": job_id,
+        "status": "PROCESSING",
+        "files_queued": files_sent,
+        "message": format!("Successfully queued {} files for analysis.", files_sent)
+    }))))
+}
+
+pub async fn analyze_zip_handler(
+    State(state): State<GatewayState>,
+    Extension(claims): Extension<Claims>,
+    mut multipart: Multipart,
+) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
+    let job_id = Uuid::new_v4();
+    let dir = tempdir().map_err(|_| {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to create temp directory"})))
+    })?;
+
+    if let Some(field) = multipart.next_field().await.unwrap() {
+        let data = field.bytes().await.unwrap();
+        let reader = std::io::Cursor::new(data);
+        
+        let mut archive = zip::ZipArchive::new(reader).map_err(|_| {
+            (StatusCode::BAD_REQUEST, Json(json!({"error": "Invalid ZIP file format"})))
+        })?;
+
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).unwrap();
+            let outpath = match file.enclosed_name() {
+                Some(path) => dir.path().join(path),
+                None => continue,
+            };
+
+            if file.name().ends_with('/') {
+                std::fs::create_dir_all(&outpath).unwrap();
+            } else {
+                if let Some(p) = outpath.parent() {
+                    std::fs::create_dir_all(p).unwrap();
+                }
+                let mut outfile = std::fs::File::create(&outpath).unwrap();
+                std::io::copy(&mut file, &mut outfile).unwrap();
+            }
+        }
+    } else {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "No file uploaded"}))));
+    }
+
+    let files_sent = crate::scanner::scan_directory_and_publish(
+        dir.path(),
+        job_id,
+        Some(claims.sub),
+        &state.amqp_channel
+    ).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))))?;
+
+    Ok((StatusCode::ACCEPTED, Json(json!({
+        "analysis_job_id": job_id,
+        "status": "PROCESSING",
+        "files_queued": files_sent,
+        "message": format!("Successfully queued {} files for analysis.", files_sent)
+    }))))
 }
 
 pub async fn get_results_handler(
