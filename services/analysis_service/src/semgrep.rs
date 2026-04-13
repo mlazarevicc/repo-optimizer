@@ -4,7 +4,7 @@ use std::{io::Write, process::Command};
 use tempfile::Builder;
 use uuid::Uuid;
 
-pub fn run_scan(code: &str, language: &str, analysis_job_id: Uuid) -> Result<Vec<Problem>, String> {
+pub fn run_scan(code: &str, language: &str, analysis_job_id: Uuid, file_path: Option<String>) -> Result<Vec<Problem>, String> {
     let ext = match language.to_lowercase().as_str() {
         "python" => ".py",
         "javascript" => ".js",
@@ -71,6 +71,7 @@ pub fn run_scan(code: &str, language: &str, analysis_job_id: Uuid) -> Result<Vec
                 message,
                 code_snippet,
                 created_at: chrono::Utc::now(),
+                file_path: file_path.clone(),
             });
         }
     }

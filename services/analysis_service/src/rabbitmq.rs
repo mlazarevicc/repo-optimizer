@@ -10,6 +10,7 @@ use uuid::Uuid;
 struct AnalyzeJob {
     analysis_job_id: Uuid,
     user_id: Option<String>,
+    file_path: Option<String>,
 }
 
 pub async fn start_worker(state: Arc<AppState>) -> Result<(), lapin::Error> {
@@ -39,7 +40,7 @@ pub async fn start_worker(state: Arc<AppState>) -> Result<(), lapin::Error> {
                 Ok(job) => {
                     tracing::info!("Processing analysis job: {}", job.analysis_job_id);
 
-                    match crate::process_analysis(&state, job.analysis_job_id, job.user_id.clone()).await {
+                    match crate::process_analysis(&state, job.analysis_job_id, job.file_path.clone(), job.user_id.clone()).await {
                         Ok(problems) => {
                             let next_job = json!({
                                 "analysis_job_id": job.analysis_job_id,

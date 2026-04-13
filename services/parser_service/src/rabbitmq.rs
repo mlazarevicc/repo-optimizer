@@ -36,6 +36,7 @@ pub async fn start_worker(state: Arc<AppState>) -> Result<(), lapin::Error> {
                         Ok(_) => {
                             let next_job = json!({
                                 "analysis_job_id": job_id,
+                                "file_path": req.file_path,
                                 "user_id": req.user_id,
                             });
 

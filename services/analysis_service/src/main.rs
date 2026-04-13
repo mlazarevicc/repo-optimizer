@@ -45,16 +45,21 @@ async fn health() -> Json<HealthResponse> {
 pub async fn process_analysis(
     state: &Arc<AppState>,
     analysis_job_id: Uuid,
+    file_path: Option<String>,
     user_id: Option<String>,
 ) -> Result<Vec<Value>, String> {
     
     let uuid_bytes = analysis_job_id.into_bytes();
-    let query = doc! { 
+    let mut query = doc! { 
         "analysis_job_id": Binary { 
             subtype: BinarySubtype::Generic, 
             bytes: uuid_bytes.to_vec() 
         } 
     };
+    
+    if let Some(fp) = &file_path {
+        query.insert("file_path", fp.clone());
+    }
 
     let ast_doc = state
         .parsed_asts
@@ -78,7 +83,7 @@ pub async fn process_analysis(
     let sec_detector = SecurityDetector::new();
     problems.extend(sec_detector.detect(&ast));
 
-    if let Ok(semgrep_issues) = crate::semgrep::run_scan(&ast.code, &ast.language.to_string(), analysis_job_id) {
+    if let Ok(semgrep_issues) = crate::semgrep::run_scan(&ast.code, &ast.language.to_string(), analysis_job_id, ast.file_path.clone()) {
         problems.extend(semgrep_issues);
     }
 

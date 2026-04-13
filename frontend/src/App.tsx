@@ -15,6 +15,7 @@ function App() {
         <Route element={<ProtectedRoute />}>
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/results" element={<Results />} />
+          <Route path="/results/:jobId" element={<Results />} />
         </Route>
 
         <Route path="/" element={<Navigate to="/dashboard" replace />} />

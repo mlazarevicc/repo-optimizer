@@ -30,6 +30,7 @@ pub struct ParseRequest {
     pub language: String,
     pub analysis_job_id: Option<Uuid>,
     pub user_id: Option<String>,
+    pub file_path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,4 +84,5 @@ pub struct ParsedAst {
     pub functions: Vec<FunctionInfo>,
     pub classes: Vec<ClassInfo>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub file_path: Option<String>,
 }

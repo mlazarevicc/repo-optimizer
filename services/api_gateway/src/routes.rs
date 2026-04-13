@@ -30,16 +30,17 @@ struct FetchedProblem {
     line_end: usize,
     message: String,
     code_snippet: String,
+    file_path: Option<String>,
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(serde::Deserialize, serde::Serialize, Debug)]
 struct FetchedSuggestion {
-    id: Uuid,
-    problem_id: Uuid,
+    id: mongodb::bson::Uuid, 
+    problem_id: mongodb::bson::Uuid,
     explanation: String,
     original_code: String,
     suggested_code: String,
-    impact_score: u8,
+    impact_score: i32,
 }
 
 #[derive(serde::Deserialize)]
@@ -94,40 +95,31 @@ pub async fn login_handler(
 pub async fn analyze_code_handler(
     State(state): State<GatewayState>,
     Extension(claims): Extension<Claims>,
-    Json(mut payload): Json<Value>,
+    Json(payload): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
-    let analysis_job_id = Uuid::new_v4();
-    tracing::info!("Queuing async analysis job {} for user {}", analysis_job_id, claims.sub);
-
-    if let Some(obj) = payload.as_object_mut() {
-        obj.insert("analysis_job_id".to_string(), json!(analysis_job_id));
-        obj.insert("user_id".to_string(), json!(claims.sub));
-    } else {
-        return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "Payload must be a valid JSON object"}))));
-    }
+    let job_id = Uuid::new_v4();
+    
+    let mut amqp_payload = payload.clone();
+    amqp_payload["analysis_job_id"] = json!(job_id);
+    amqp_payload["user_id"] = json!(claims.sub);
 
     let status_coll = state.db.collection::<mongodb::bson::Document>("job_status");
-    let _ = status_coll.insert_one(doc! {
-        "analysis_job_id": analysis_job_id.to_string(),
-        "status": "PROCESSING"
-    }, None).await;
+    let uuid_bytes = job_id.into_bytes();
+    status_coll.insert_one(doc! {
+        "analysis_job_id": Binary { subtype: BinarySubtype::Generic, bytes: uuid_bytes.to_vec() },
+        "status": "PROCESSING",
+        "total_files": 1,
+        "processed_files": 0
+    }, None).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("DB error: {}", e)}))))?;
 
-    match crate::rabbitmq::publish_job(&state.amqp_channel, &payload).await {
-        Ok(_) => {
-            Ok((StatusCode::ACCEPTED, Json(json!({
-                "analysis_job_id": analysis_job_id,
-                "status": "PROCESSING",
-                "message": "The analysis was successfully queued for processing."
-            }))))
-        },
-        Err(e) => {
-            tracing::error!("Failed to publish job to RabbitMQ: {}", e);
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to queue the analysis job"}))
-            ))
-        }
+    if let Err(e) = crate::rabbitmq::publish_job(&state.amqp_channel, &amqp_payload).await {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("RabbitMQ error: {}", e)}))));
     }
+
+    Ok((StatusCode::ACCEPTED, Json(json!({
+        "analysis_job_id": job_id,
+        "status": "PROCESSING"
+    }))))
 }
 
 pub async fn analyze_git_handler(
@@ -136,11 +128,7 @@ pub async fn analyze_git_handler(
     Json(payload): Json<GitAnalyzeRequest>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
     let job_id = Uuid::new_v4();
-    
-    let dir = tempdir().map_err(|_| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to create temp directory"})))
-    })?;
-
+    let dir = tempdir().map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to create temp directory"}))))?;
     let repo_url = payload.repo_url.clone();
     let path = dir.path().to_owned();
 
@@ -159,11 +147,19 @@ pub async fn analyze_git_handler(
         &state.amqp_channel
     ).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))))?;
 
+    let status_coll = state.db.collection::<mongodb::bson::Document>("job_status");
+    let uuid_bytes = job_id.into_bytes();
+    status_coll.insert_one(doc! {
+        "analysis_job_id": Binary { subtype: BinarySubtype::Generic, bytes: uuid_bytes.to_vec() },
+        "status": "PROCESSING",
+        "total_files": files_sent as i32,
+        "processed_files": 0
+    }, None).await.map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "DB error"}))))?;
+
     Ok((StatusCode::ACCEPTED, Json(json!({
         "analysis_job_id": job_id,
         "status": "PROCESSING",
-        "files_queued": files_sent,
-        "message": format!("Successfully queued {} files for analysis.", files_sent)
+        "files_queued": files_sent
     }))))
 }
 
@@ -173,17 +169,12 @@ pub async fn analyze_zip_handler(
     mut multipart: Multipart,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
     let job_id = Uuid::new_v4();
-    let dir = tempdir().map_err(|_| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to create temp directory"})))
-    })?;
+    let dir = tempdir().map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to create temp directory"}))))?;
 
     if let Some(field) = multipart.next_field().await.unwrap() {
         let data = field.bytes().await.unwrap();
         let reader = std::io::Cursor::new(data);
-        
-        let mut archive = zip::ZipArchive::new(reader).map_err(|_| {
-            (StatusCode::BAD_REQUEST, Json(json!({"error": "Invalid ZIP file format"})))
-        })?;
+        let mut archive = zip::ZipArchive::new(reader).map_err(|_| (StatusCode::BAD_REQUEST, Json(json!({"error": "Invalid ZIP"}))))?;
 
         for i in 0..archive.len() {
             let mut file = archive.by_index(i).unwrap();
@@ -191,118 +182,79 @@ pub async fn analyze_zip_handler(
                 Some(path) => dir.path().join(path),
                 None => continue,
             };
-
             if file.name().ends_with('/') {
                 std::fs::create_dir_all(&outpath).unwrap();
             } else {
-                if let Some(p) = outpath.parent() {
-                    std::fs::create_dir_all(p).unwrap();
-                }
+                if let Some(p) = outpath.parent() { std::fs::create_dir_all(p).unwrap(); }
                 let mut outfile = std::fs::File::create(&outpath).unwrap();
                 std::io::copy(&mut file, &mut outfile).unwrap();
             }
         }
-    } else {
-        return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "No file uploaded"}))));
     }
 
-    let files_sent = crate::scanner::scan_directory_and_publish(
-        dir.path(),
-        job_id,
-        Some(claims.sub),
-        &state.amqp_channel
-    ).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))))?;
+    let files_sent = crate::scanner::scan_directory_and_publish(dir.path(), job_id, Some(claims.sub), &state.amqp_channel).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))))?;
 
-    Ok((StatusCode::ACCEPTED, Json(json!({
-        "analysis_job_id": job_id,
+    let status_coll = state.db.collection::<mongodb::bson::Document>("job_status");
+    let uuid_bytes = job_id.into_bytes();
+    status_coll.insert_one(doc! {
+        "analysis_job_id": Binary { subtype: BinarySubtype::Generic, bytes: uuid_bytes.to_vec() },
         "status": "PROCESSING",
-        "files_queued": files_sent,
-        "message": format!("Successfully queued {} files for analysis.", files_sent)
-    }))))
+        "total_files": files_sent as i32,
+        "processed_files": 0
+    }, None).await.map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "DB error"}))))?;
+
+    Ok((StatusCode::ACCEPTED, Json(json!({ "analysis_job_id": job_id, "status": "PROCESSING", "files_queued": files_sent }))))
 }
 
 pub async fn get_results_handler(
-    State(state): State<GatewayState>,
     Path(job_id_str): Path<String>,
+    State(state): State<GatewayState>,
+    Extension(_claims): Extension<Claims>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
-    
-    let job_id = match Uuid::parse_str(&job_id_str) {
-        Ok(id) => id,
-        Err(_) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "Invalid job_id format. Must be a valid UUID." })),
-            ));
-        }
-    };
+    let job_id = Uuid::parse_str(&job_id_str).map_err(|_| (StatusCode::BAD_REQUEST, Json(json!({"error": "Invalid UUID"}))))?;
+    let uuid_bytes = job_id.into_bytes();
+    let query = doc! { "analysis_job_id": Binary { subtype: BinarySubtype::Generic, bytes: uuid_bytes.to_vec() } };
 
-    let prob_coll = state.db.collection::<mongodb::bson::Document>("problems");
+    let status_coll = state.db.collection::<mongodb::bson::Document>("job_status");
+    let job_status_doc = status_coll.find_one(query.clone(), None).await.ok().flatten();
+    
+    let is_completed = job_status_doc.as_ref().map(|d| {
+        let total = d.get_i32("total_files").unwrap_or(1);
+        let processed = d.get_i32("processed_files").unwrap_or(0);
+        processed >= total || d.get_str("status").unwrap_or("PROCESSING") == "COMPLETED"
+    }).unwrap_or(false);
+
+    if !is_completed {
+        let msg = if let Some(d) = &job_status_doc {
+            let total = d.get_i32("total_files").unwrap_or(1);
+            let processed = d.get_i32("processed_files").unwrap_or(0);
+            format!("Analyzing codebase... ({}/{}) files processed", processed, total)
+        } else {
+            "Initializing analysis...".to_string()
+        };
+        return Ok((StatusCode::OK, Json(json!({ "status": "PROCESSING", "message": msg }))));
+    }
+
+    let prob_coll = state.db.collection::<FetchedProblem>("problems");
     let sugg_coll = state.db.collection::<mongodb::bson::Document>("suggestions");
 
-    let uuid_bytes = job_id.into_bytes();
-    let query = doc! { 
-        "analysis_job_id": Binary { 
-            subtype: BinarySubtype::Generic, 
-            bytes: uuid_bytes.to_vec() 
-        } 
-    };
+    let mut problems = Vec::new();
+    if let Ok(mut cursor) = prob_coll.find(query.clone(), None).await {
+        while let Some(Ok(p)) = cursor.next().await { problems.push(p); }
+    }
 
-    let mut problems: Vec<FetchedProblem> = Vec::new();
-    let mut suggestions: Vec<FetchedSuggestion> = Vec::new();
-
-    match prob_coll.find(query.clone(), None).await {
-        Ok(mut prob_cursor) => {
-            while let Some(Ok(doc)) = prob_cursor.next().await {
-                if let Ok(p) = mongodb::bson::from_document::<FetchedProblem>(doc) {
-                    problems.push(p);
-                }
+    let mut suggestions = Vec::new();
+    if let Ok(mut cursor) = sugg_coll.find(query.clone(), None).await {
+        while let Some(Ok(doc)) = cursor.next().await {
+            match mongodb::bson::from_document::<FetchedSuggestion>(doc) {
+                Ok(s) => suggestions.push(s),
+                Err(e) => tracing::error!("Failed to deserialize suggestion: {}", e),
             }
         }
-        Err(e) => {
-            tracing::error!("Database error while fetching problems: {}", e);
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Database error" }))));
-        }
     }
 
-    if problems.is_empty() {
-        return Ok((
-            StatusCode::OK,
-            Json(json!({
-                "status": "PROCESSING",
-                "message": "Job is still processing or no problems were found."
-            })),
-        ));
-    }
-
-    match sugg_coll.find(query.clone(), None).await {
-        Ok(mut sugg_cursor) => {
-            while let Some(Ok(doc)) = sugg_cursor.next().await {
-                if let Ok(s) = mongodb::bson::from_document::<FetchedSuggestion>(doc) {
-                    suggestions.push(s);
-                }
-            }
-        }
-        Err(e) => {
-            tracing::error!("Database error while fetching suggestions: {}", e);
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Database error" }))));
-        }
-    }
-
-    if suggestions.len() < problems.len() {
-        return Ok((
-            StatusCode::OK,
-            Json(json!({
-                "status": "PROCESSING",
-                "message": format!("Analysis completed. Generating fix suggestions... ({}/{})", suggestions.len(), problems.len())
-            })),
-        ));
-    }
-
-    let mut critical_count = 0;
-    let mut high_count = 0;
-    let mut medium_count = 0;
-    let mut low_count = 0;
-
+    let mut critical_count = 0; let mut high_count = 0; let mut medium_count = 0; let mut low_count = 0;
     let ranked_issues: Vec<Value> = problems.iter().map(|p| {
         let rank_score = match p.severity.to_lowercase().as_str() {
             "critical" => { critical_count += 1; 0.95 },
@@ -310,44 +262,18 @@ pub async fn get_results_handler(
             "medium" => { medium_count += 1; 0.50 },
             _ => { low_count += 1; 0.25 },
         };
-        
-        json!({
-            "id": p.id,
-            "problem_type": p.problem_type,
-            "severity": p.severity,
-            "line_start": p.line_start,
-            "line_end": p.line_end,
-            "message": p.message,
-            "code_snippet": p.code_snippet,
-            "rank_score": rank_score
-        })
+        json!({ "id": p.id, "problem_type": p.problem_type, "severity": p.severity, "line_start": p.line_start, "line_end": p.line_end, "message": p.message, "code_snippet": p.code_snippet, "rank_score": rank_score, "file_path": p.file_path.clone() })
     }).collect();
 
     let suggestions_json: Vec<Value> = suggestions.into_iter().map(|s| {
-        json!({
-            "id": s.id,
-            "problem_id": s.problem_id,
-            "explanation": s.explanation,
-            "original_code": s.original_code,
-            "suggested_code": s.suggested_code,
-            "impact_score": s.impact_score
-        })
+        json!({ "id": s.id.to_string(), "problem_id": s.problem_id.to_string(), "explanation": s.explanation, "original_code": s.original_code, "suggested_code": s.suggested_code, "impact_score": s.impact_score })
     }).collect();
 
-    Ok((
-        StatusCode::OK,
-        Json(json!({
-            "analysis_job_id": job_id,
-            "status": "COMPLETED",
-            "summary": {
-                "critical_count": critical_count,
-                "high_count": high_count,
-                "medium_count": medium_count,
-                "low_count": low_count,
-                "total_problems": problems.len()
-            },
-            "ranked_issues": ranked_issues,
-            "suggestions": suggestions_json
-        })),
-    ))
+    Ok((StatusCode::OK, Json(json!({
+        "analysis_job_id": job_id,
+        "status": "COMPLETED",
+        "summary": { "critical_count": critical_count, "high_count": high_count, "medium_count": medium_count, "low_count": low_count, "total_problems": problems.len() },
+        "ranked_issues": ranked_issues,
+        "suggestions": suggestions_json
+    }))))
 }

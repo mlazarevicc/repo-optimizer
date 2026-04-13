@@ -29,6 +29,7 @@ impl Detector for PerformanceDetector {
                         .collect::<Vec<_>>()
                         .join("\n"),
                     created_at: chrono::Utc::now(),
+                    file_path: data.file_path.clone(),
                 });
             }
         }
@@ -53,6 +54,7 @@ impl Detector for PerformanceDetector {
                 message: "Potential N+1 query detected in loop. Consider using batch queries or eager loading.".to_string(),
                 code_snippet: data.code.lines().nth(line_num - 1).unwrap_or("").to_string(),
                 created_at: chrono::Utc::now(),
+                file_path: data.file_path.clone(),
             });
         }
 

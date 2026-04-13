@@ -41,6 +41,7 @@ impl Detector for SecurityDetector {
                         ),
                         code_snippet: line.to_string(),
                         created_at: chrono::Utc::now(),
+                        file_path: data.file_path.clone(),
                     });
                 }
             }
@@ -69,6 +70,7 @@ impl Detector for SecurityDetector {
                             message: "Potential XSS vulnerability. Sanitize user input before rendering.".to_string(),
                             code_snippet: line.to_string(),
                             created_at: chrono::Utc::now(),
+                            file_path: data.file_path.clone(),
                         });
                     }
                 }

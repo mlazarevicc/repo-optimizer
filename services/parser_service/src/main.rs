@@ -48,6 +48,7 @@ pub async fn process_and_save(state: &Arc<AppState>, payload: ParseRequest) -> R
         functions,
         classes,
         created_at: chrono::Utc::now(),
+        file_path: payload.file_path,
     };
 
     state.parsed_asts.insert_one(parsed_ast).await.map_err(|e| e.to_string())?;
@@ -71,7 +72,6 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Connected to MongoDB");
 
-    // We use Arc (Atomically Reference Counted) to share state between the HTTP server and RabbitMQ workers
     let state = Arc::new(AppState { parsed_asts });
 
     let worker_state = state.clone();

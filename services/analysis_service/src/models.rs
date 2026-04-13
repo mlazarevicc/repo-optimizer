@@ -76,13 +76,14 @@ pub struct Problem {
     pub message: String,
     pub code_snippet: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub file_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AnalyzeRequest {
     pub analysis_job_id: Uuid,
     #[serde(default)]
-    pub user_id: Option<String>
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -137,4 +138,5 @@ pub struct ParsedAst {
     pub metrics: CodeMetrics,
     pub functions: Vec<FunctionInfo>,
     pub classes: Vec<ClassInfo>,
+    pub file_path: Option<String>,
 }
