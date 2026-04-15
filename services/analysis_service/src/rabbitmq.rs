@@ -34,43 +34,48 @@ pub async fn start_worker(state: Arc<AppState>) -> Result<(), lapin::Error> {
 
     while let Some(delivery) = consumer.next().await {
         if let Ok(delivery) = delivery {
-            let payload: Result<AnalyzeJob, _> = serde_json::from_slice(&delivery.data);
+            let state_clone = state.clone();
+            let channel_clone = channel.clone();
 
-            match payload {
-                Ok(job) => {
-                    tracing::info!("Processing analysis job: {}", job.analysis_job_id);
+            tokio::spawn(async move {
+                let payload: Result<AnalyzeJob, _> = serde_json::from_slice(&delivery.data);
 
-                    match crate::process_analysis(&state, job.analysis_job_id, job.file_path.clone(), job.user_id.clone()).await {
-                        Ok(problems) => {
-                            let next_job = json!({
-                                "analysis_job_id": job.analysis_job_id,
-                                "problems": problems,
-                            });
+                match payload {
+                    Ok(job) => {
+                        tracing::info!("Processing analysis job: {}", job.analysis_job_id);
 
-                            let _ = channel
-                                .basic_publish(
-                                    "",
-                                    "rank_queue",
-                                    BasicPublishOptions::default(),
-                                    &serde_json::to_vec(&next_job).unwrap(),
-                                    BasicProperties::default(),
-                                )
-                                .await;
-                                
-                            tracing::info!("Job {} successfully analyzed and sent to rank_queue", job.analysis_job_id);
-                            let _ = delivery.ack(BasicAckOptions::default()).await;
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to process analysis for job {}: {}", job.analysis_job_id, e);
-                            let _ = delivery.nack(BasicNackOptions { multiple: false, requeue: false }).await;
+                        match crate::process_analysis(&state_clone, job.analysis_job_id, job.file_path, job.user_id).await {
+                            Ok(problems) => {
+                                let next_job = json!({
+                                    "analysis_job_id": job.analysis_job_id,
+                                    "problems": problems,
+                                });
+
+                                let _ = channel_clone
+                                    .basic_publish(
+                                        "",
+                                        "rank_queue",
+                                        BasicPublishOptions::default(),
+                                        &serde_json::to_vec(&next_job).unwrap(),
+                                        BasicProperties::default(),
+                                    )
+                                    .await;
+                                    
+                                tracing::info!("Job {} successfully analyzed and sent to rank_queue", job.analysis_job_id);
+                                let _ = delivery.ack(BasicAckOptions::default()).await;
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to process analysis for job {}: {}", job.analysis_job_id, e);
+                                let _ = delivery.nack(BasicNackOptions { multiple: false, requeue: false }).await;
+                            }
                         }
                     }
+                    Err(e) => {
+                        tracing::error!("Failed to deserialize RabbitMQ message: {}", e);
+                        let _ = delivery.nack(BasicNackOptions { multiple: false, requeue: false }).await;
+                    }
                 }
-                Err(e) => {
-                    tracing::error!("Failed to deserialize RabbitMQ message: {}", e);
-                    let _ = delivery.nack(BasicNackOptions { multiple: false, requeue: false }).await;
-                }
-            }
+            });
         }
     }
 

@@ -32,28 +32,32 @@ pub async fn start_worker(state: Arc<AppState>) -> Result<(), lapin::Error> {
 
     while let Some(delivery) = consumer.next().await {
         if let Ok(delivery) = delivery {
-            let payload: Result<SuggestJob, _> = serde_json::from_slice(&delivery.data);
+            let state_clone = state.clone();
 
-            match payload {
-                Ok(job) => {
-                    tracing::info!("Generating suggestions for job: {}", job.analysis_job_id);
+            tokio::spawn(async move {
+                let payload: Result<SuggestJob, _> = serde_json::from_slice(&delivery.data);
 
-                    match crate::process_suggestions(&state, job.analysis_job_id, job.problems).await {
-                        Ok(_) => {
-                            tracing::info!("Job {} fully completed and saved to DB!", job.analysis_job_id);
-                            let _ = delivery.ack(BasicAckOptions::default()).await;
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to process suggestions for job {}: {}", job.analysis_job_id, e);
-                            let _ = delivery.nack(BasicNackOptions { multiple: false, requeue: false }).await;
+                match payload {
+                    Ok(job) => {
+                        tracing::info!("Generating suggestions for job: {}", job.analysis_job_id);
+
+                        match crate::process_suggestions(&state_clone, job.analysis_job_id, job.problems).await {
+                            Ok(_) => {
+                                tracing::info!("Job {} fully completed and saved to DB!", job.analysis_job_id);
+                                let _ = delivery.ack(BasicAckOptions::default()).await;
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to process suggestions for job {}: {}", job.analysis_job_id, e);
+                                let _ = delivery.nack(BasicNackOptions { multiple: false, requeue: false }).await;
+                            }
                         }
                     }
+                    Err(e) => {
+                        tracing::error!("Failed to deserialize RabbitMQ message: {}", e);
+                        let _ = delivery.nack(BasicNackOptions { multiple: false, requeue: false }).await;
+                    }
                 }
-                Err(e) => {
-                    tracing::error!("Failed to deserialize RabbitMQ message: {}", e);
-                    let _ = delivery.nack(BasicNackOptions { multiple: false, requeue: false }).await;
-                }
-            }
+            });
         }
     }
 
