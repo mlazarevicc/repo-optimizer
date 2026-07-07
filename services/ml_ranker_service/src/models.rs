@@ -35,12 +35,14 @@ pub struct Problem {
     pub created_at: DateTime<Utc>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct RankRequest {
     pub analysis_job_id: Uuid,
     pub problems: Vec<Problem>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct RankResponse {
     pub analysis_job_id: Uuid,
@@ -58,6 +60,9 @@ pub struct RankedProblem {
     pub message: String,
     pub code_snippet: String,
     pub rank_score: f32,
+    /// Tezine feature-a po kojima je ovaj problem rangiran.
+    /// Redosled: [is_security, category_weight, severity_calibrated,
+    ///            file_exposure, cyclomatic, nesting, position, loc]
     pub feature_importance: Vec<f64>,
 }
 
@@ -69,6 +74,7 @@ pub enum Language {
     TypeScript,
     Rust,
     Java,
+    Go,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +85,10 @@ pub struct ParsedAst {
     pub metrics: CodeMetrics,
     pub functions: Vec<FunctionInfo>,
     pub classes: Vec<ClassInfo>,
+    // Relativna putanja fajla - koristi ml_engine za file exposure score.
+    // None za inline snippet analizu.
+    #[serde(default)]
+    pub file_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

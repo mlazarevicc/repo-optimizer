@@ -1,3 +1,13 @@
+x-rust-env: &rust-env
+  RUST_LOG: info
+  JWT_SECRET: dev_secret_change_in_production_min_32_chars
+  JWT_EXPIRATION_HOURS: "24"
+  # Unutar docker mreze koristimo IME SERVISA i INTERNI port (ne mapirani host port!).
+  # Postgres je mapiran na host:5433, ali unutar mreze i dalje slusa na 5432.
+  DATABASE_URL: postgres://repo_optimizer:dev_password@postgres:5432/repo_optimizer
+  MONGODB_URL: mongodb://repo_optimizer:dev_password@mongodb:27017/repo_optimizer?authSource=admin
+  AMQP_URL: amqp://repo_optimizer:dev_password@rabbitmq:5672
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -61,6 +71,157 @@ services:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------
+  # Rust mikroservisi.
+  # Za svakodnevni dev rad PREPORUKA je da ove servise pokrecete lokalno sa
+  # `cargo run -p <ime_servisa>` (brze, bolji error/backtrace), dok ova 4 baze
+  # gore ostaju u Dockeru. Blokovi ispod su za INTEGRACIONO testiranje cele
+  # pipeline-e i za finalnu demonstraciju (jedan `docker compose up` koji
+  # radi i kod profesora i kod bilo kog drugog developera bez ista
+  # instaliranog lokalno osim Dockera).
+  # ---------------------------------------------------------------------
+
+  auth_service:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE_NAME: auth_service
+    container_name: repo-optimizer-auth-service
+    environment:
+      <<: *rust-env
+      AUTH_SERVICE_PORT: "8001"
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  parser_service:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE_NAME: parser_service
+    container_name: repo-optimizer-parser-service
+    environment:
+      <<: *rust-env
+      PARSER_SERVICE_PORT: "8002"
+    ports:
+      - "8002:8002"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  analysis_service:
+    build:
+      context: .
+      dockerfile: Dockerfile.analysis_service
+    container_name: repo-optimizer-analysis-service
+    environment:
+      <<: *rust-env
+      ANALYSIS_SERVICE_PORT: "8003"
+    ports:
+      - "8003:8003"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ml_ranker_service:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE_NAME: ml_ranker_service
+    container_name: repo-optimizer-ml-ranker-service
+    environment:
+      <<: *rust-env
+      ML_RANKER_SERVICE_PORT: "8004"
+    ports:
+      - "8004:8004"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  suggestion_generator_service:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE_NAME: suggestion_generator_service
+    container_name: repo-optimizer-suggestion-service
+    environment:
+      <<: *rust-env
+      SUGGESTION_SERVICE_PORT: "8005"
+    ports:
+      - "8005:8005"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api_gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE_NAME: api_gateway
+    container_name: repo-optimizer-api-gateway
+    environment:
+      <<: *rust-env
+      API_GATEWAY_SERVICE_PORT: "8006"
+      AUTH_SERVICE_URL: http://auth_service:8001
+    ports:
+      - "8006:8006"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      auth_service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8006/health"]
       interval: 10s
       timeout: 5s
       retries: 5

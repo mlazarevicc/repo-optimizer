@@ -45,6 +45,7 @@ pub async fn scan_directory_and_publish(
             "ts" => "typescript",
             "rs" => "rust",
             "java" => "java",
+            "go" => "go",
             _ => continue,
         };
 

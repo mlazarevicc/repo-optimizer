@@ -2,6 +2,7 @@ use crate::{models::ParseRequest, AppState};
 use futures_lite::stream::StreamExt;
 use lapin::{options::*, types::FieldTable, BasicProperties, Connection, ConnectionProperties};
 use serde_json::json;
+use tokio::sync::Semaphore;
 use std::{env, sync::Arc};
 
 pub async fn start_worker(state: Arc<AppState>) -> Result<(), lapin::Error> {
@@ -22,11 +23,14 @@ pub async fn start_worker(state: Arc<AppState>) -> Result<(), lapin::Error> {
         .await?;
 
     tracing::info!("Parser service worker listening on 'parse_queue'...");
+    let semaphore = Arc::new(Semaphore::new(20));
 
     while let Some(delivery) = consumer.next().await {
         if let Ok(delivery) = delivery {
             let state_clone = state.clone();
             let channel_clone = channel.clone();
+
+            let _permit = semaphore.clone().acquire_owned().await.unwrap();
 
             tokio::spawn(async move {
                 let payload: Result<ParseRequest, _> = serde_json::from_slice(&delivery.data);
@@ -42,6 +46,7 @@ pub async fn start_worker(state: Arc<AppState>) -> Result<(), lapin::Error> {
                                     "analysis_job_id": job_id,
                                     "file_path": req.file_path,
                                     "user_id": req.user_id,
+                                    "language": req.language,
                                 });
 
                                 let _ = channel_clone

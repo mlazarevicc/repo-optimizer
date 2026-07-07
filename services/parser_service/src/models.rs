@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
     Python,
@@ -9,6 +9,7 @@ pub enum Language {
     TypeScript,
     Rust,
     Java,
+    Go,
 }
 
 impl Language {
@@ -19,6 +20,7 @@ impl Language {
             "typescript" | "ts" => Some(Language::TypeScript),
             "rust" | "rs" => Some(Language::Rust),
             "java" => Some(Language::Java),
+            "go" => Some(Language::Go),
             _ => None,
         }
     }
@@ -34,6 +36,7 @@ pub struct ParseRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[allow(dead_code)]
 pub struct ParseResponse {
     pub analysis_job_id: Uuid,
     pub language: Language,

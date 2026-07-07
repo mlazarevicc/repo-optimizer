@@ -76,8 +76,22 @@ async fn main() -> anyhow::Result<()> {
 
     let worker_state = state.clone();
     tokio::spawn(async move {
-        if let Err(e) = rabbitmq::start_worker(worker_state).await {
-            tracing::error!("RabbitMQ worker crashed: {}", e);
+        // RabbitMQ konekcija moze privremeno da ne bude spremna (startup race,
+        // restart kontejnera, mrezni blip) - bez ove petlje, worker bi se
+        // ugasio TRAJNO na prvi takav slucaj (HTTP /health bi i dalje radio,
+        // sto bi sakrilo problem - tacno ono sto se desilo).
+        let mut backoff = std::time::Duration::from_secs(2);
+        loop {
+            match rabbitmq::start_worker(worker_state.clone()).await {
+                Ok(()) => {
+                    tracing::warn!("RabbitMQ worker disconnected, reconnecting in {:?}...", backoff);
+                }
+                Err(e) => {
+                    tracing::error!("RabbitMQ worker crashed: {} - reconnecting in {:?}...", e, backoff);
+                }
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = std::cmp::min(backoff * 2, std::time::Duration::from_secs(30));
         }
     });
 

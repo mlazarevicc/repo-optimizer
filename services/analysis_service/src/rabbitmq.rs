@@ -1,16 +1,18 @@
 use crate::AppState;
 use futures_lite::stream::StreamExt;
 use lapin::{options::*, types::FieldTable, BasicProperties, Connection, ConnectionProperties};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use std::{env, sync::Arc};
 use uuid::Uuid;
+use tokio::sync::Semaphore;
 
 #[derive(Debug, Deserialize)]
 struct AnalyzeJob {
     analysis_job_id: Uuid,
     user_id: Option<String>,
     file_path: Option<String>,
+    language: Option<String>,
 }
 
 pub async fn start_worker(state: Arc<AppState>) -> Result<(), lapin::Error> {
@@ -31,11 +33,14 @@ pub async fn start_worker(state: Arc<AppState>) -> Result<(), lapin::Error> {
         .await?;
 
     tracing::info!("Analysis service worker listening on 'analyze_queue'...");
+    let semaphore = Arc::new(Semaphore::new(20));
 
     while let Some(delivery) = consumer.next().await {
         if let Ok(delivery) = delivery {
             let state_clone = state.clone();
             let channel_clone = channel.clone();
+
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
 
             tokio::spawn(async move {
                 let payload: Result<AnalyzeJob, _> = serde_json::from_slice(&delivery.data);
@@ -44,7 +49,7 @@ pub async fn start_worker(state: Arc<AppState>) -> Result<(), lapin::Error> {
                     Ok(job) => {
                         tracing::info!("Processing analysis job: {}", job.analysis_job_id);
 
-                        match crate::process_analysis(&state_clone, job.analysis_job_id, job.file_path, job.user_id).await {
+                        match crate::process_analysis(&state_clone, job.analysis_job_id, job.file_path, job.user_id, job.language).await {
                             Ok(problems) => {
                                 let next_job = json!({
                                     "analysis_job_id": job.analysis_job_id,
@@ -75,6 +80,7 @@ pub async fn start_worker(state: Arc<AppState>) -> Result<(), lapin::Error> {
                         let _ = delivery.nack(BasicNackOptions { multiple: false, requeue: false }).await;
                     }
                 }
+                drop(permit);
             });
         }
     }

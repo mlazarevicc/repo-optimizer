@@ -21,12 +21,17 @@ tower-http = { version = "0.5", features = ["cors", "auth"] }
 
 lapin = "2.3"
 
-mongodb = "2.8"
+mongodb = { workspace = true }
 futures-lite = "1.13"
-bson = "2.0"
+bson = { workspace = true }
+
+# Postgres - vlasnistvo nad poslom (analysis_jobs) zivi ovde, ne u Mongo
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "macros"] }
+chrono = { workspace = true }
 
 git2 = "0.18"
 tempfile = "3.8"
 walkdir = "2.4"
 zip = "0.6"
 bytes = "1.5"
+redis = { version = "0.25", features = ["tokio-comp"] }

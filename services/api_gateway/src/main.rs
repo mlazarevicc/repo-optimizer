@@ -4,17 +4,15 @@ mod rabbitmq;
 mod scanner;
 
 use axum::{
-    middleware::from_fn,
-    routing::{get, post},
+    routing::{get, post, delete},
     Json, Router,
 };
-use reqwest::Client;
 use serde::Serialize;
-use std::{env, net::SocketAddr};
+use std::env;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
-use axum::extract::Path;
 use mongodb::Client as MongoClient;
+use sqlx::PgPool;
 
 #[derive(Serialize)]
 struct HealthResponse {
@@ -57,10 +55,23 @@ async fn main() -> anyhow::Result<()> {
     let db = mongo_client.database("repo_optimizer");
     tracing::info!("API Gateway connected to MongoDB");
 
+    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let pg_pool = PgPool::connect(&database_url).await?;
+    tracing::info!("API Gateway connected to PostgreSQL");
+
+    // Redis - kesiranje COMPLETED rezultata (TTL 1h). Best-effort: startujemo
+    // i ako Redis nije dostupan samo logujemo warning, ne pucamo ceo servis.
+    let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://redis:6379".to_string());
+    let redis_client = redis::Client::open(redis_url.as_str())
+        .expect("Invalid REDIS_URL");
+    tracing::info!("API Gateway Redis client initialized ({})", redis_url);
+
     let state = routes::GatewayState { 
         http_client,
         amqp_channel,
         db, 
+        pg_pool,
+        redis_client,
     };
 
     let public_routes = Router::new()
@@ -72,6 +83,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/analyze/git", post(routes::analyze_git_handler))
         .route("/api/analyze/zip", post(routes::analyze_zip_handler))
         .route("/api/results/:job_id", get(routes::get_results_handler))
+        .route("/api/results/:job_id", delete(routes::delete_results_handler))
+        .route("/api/jobs", get(routes::list_jobs_handler))
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
     let app = Router::new()

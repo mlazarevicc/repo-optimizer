@@ -1,0 +1,53 @@
+# analysis_service shelluje semgrep ("semgrep scan --json") iz src/semgrep.rs,
+# pa runtime image MORA da ima Python + semgrep instaliran - generican
+# Dockerfile.service to nema. Sve ostalo je identicno build procesu kao za
+# ostale servise.
+#
+# Build primer:
+#   docker build -f Dockerfile.analysis_service -t repo-optimizer/analysis_service .
+#
+# NAPOMENA O MEMORIJI: vidi Dockerfile.service - `--jobs 2` + sekvencijalno
+# gradjenje servisa (ne svih 6 paralelno) je preporuceno na laptopima.
+
+# NAPOMENA: "1-bookworm" floating tag - vidi obrazlozenje u Dockerfile.service.
+FROM rust:1-bookworm AS builder
+
+WORKDIR /app
+
+COPY Cargo.toml Cargo.lock* ./
+COPY services/auth_service/Cargo.toml services/auth_service/Cargo.toml
+COPY services/parser_service/Cargo.toml services/parser_service/Cargo.toml
+COPY services/analysis_service/Cargo.toml services/analysis_service/Cargo.toml
+COPY services/ml_ranker_service/Cargo.toml services/ml_ranker_service/Cargo.toml
+COPY services/suggestion_generator_service/Cargo.toml services/suggestion_generator_service/Cargo.toml
+COPY services/api_gateway/Cargo.toml services/api_gateway/Cargo.toml
+
+RUN for d in auth_service parser_service analysis_service ml_ranker_service suggestion_generator_service api_gateway; do \
+        mkdir -p services/$d/src && echo "fn main() {}" > services/$d/src/main.rs; \
+    done
+
+RUN cargo build --release -p analysis_service --jobs 2
+
+COPY services/analysis_service/src ./services/analysis_service/src
+RUN touch services/analysis_service/src/main.rs && \
+    cargo build --release -p analysis_service --jobs 2
+
+# ---- Runtime stage ----
+FROM debian:bookworm-slim
+
+# python3/pip da bismo mogli da instaliramo semgrep CLI (analysis_service ga
+# zove kao eksterni proces preko `Command::new("semgrep")`).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        python3 \
+        python3-pip \
+    && pip install --no-cache-dir --break-system-packages semgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=builder /app/target/release/analysis_service /usr/local/bin/service
+
+ENV RUST_LOG=info
+CMD ["service"]

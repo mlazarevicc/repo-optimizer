@@ -16,8 +16,8 @@ dotenvy = { workspace = true }
 uuid = { workspace = true }
 
 # Database
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono"] }
-chrono = { version = "0.4", features = ["serde"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "macros"] }
+chrono = { workspace = true }
 
 # Auth
 jsonwebtoken = "9"

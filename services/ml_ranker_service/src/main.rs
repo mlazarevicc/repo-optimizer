@@ -15,7 +15,8 @@ use tracing_subscriber::EnvFilter;
 
 pub struct AppState {
     pub ml_engine: MLEngine,
-    pub parsed_asts: Collection<ParsedAst>, 
+    pub parsed_asts: Collection<ParsedAst>,
+    pub problems_collection: Collection<mongodb::bson::Document>,
 }
 
 #[derive(Serialize)]
@@ -69,9 +70,36 @@ pub async fn process_ranking(state: &Arc<AppState>, problems_json: Vec<Value>) -
 
     let ranked_problems = state.ml_engine.rank_problems(problems, &actual_ast);
 
+    // Upisi izracunati rank_score nazad na originalni Problem dokument u Mongo,
+    // da se ne izgubi nizvodno.
+    for rp in &ranked_problems {
+        let uuid_bytes = rp.id.into_bytes();
+        let filter = doc! {
+            "id": Binary { subtype: BinarySubtype::Generic, bytes: uuid_bytes.to_vec() }
+        };
+        let update = doc! { "$set": { "rank_score": rp.rank_score as f64 } };
+        if let Err(e) = state.problems_collection.update_one(filter, update).await {
+            tracing::warn!("Failed to persist rank_score for problem {}: {}", rp.id, e);
+        }
+    }
+
+    // Serializujemo svaki problem + dodajemo `language` iz AST-a.
+    // `language` nije bio u Problem struct-u koji dolazi iz analyze_queue,
+    // pa ga uzimamo sa nivoa AST-a (svi problemi jednog fajla imaju isti jezik).
+    let language_str = serde_json::to_value(&actual_ast.language)
+        .unwrap_or(serde_json::Value::String("unknown".to_string()));
+
     let result_json: Vec<Value> = ranked_problems
         .into_iter()
-        .map(|p| serde_json::to_value(p).unwrap())
+        .map(|p| {
+            let mut v = serde_json::to_value(p).unwrap();
+            // Dodaj language polje koje suggestion_generator koristi za
+            // language-specific predloge - ovo je kljucna promena.
+            if let serde_json::Value::Object(ref mut m) = v {
+                m.insert("language".to_string(), language_str.clone());
+            }
+            v
+        })
         .collect();
 
     Ok(result_json)
@@ -94,19 +122,31 @@ async fn main() -> anyhow::Result<()> {
     let db_client = Client::with_uri_str(&mongodb_url).await?;
     let mongodb = db_client.database("repo_optimizer");
     let parsed_asts = mongodb.collection::<ParsedAst>("parsed_asts");
+    let problems_collection = mongodb.collection::<mongodb::bson::Document>("problems");
 
     let ml_engine = ml_engine::MLEngine::new();
     tracing::info!("ML Ranker Service initialized");
 
     let state = Arc::new(AppState { 
         ml_engine,
-        parsed_asts 
+        parsed_asts,
+        problems_collection,
     });
 
     let worker_state = state.clone();
     tokio::spawn(async move {
-        if let Err(e) = rabbitmq::start_worker(worker_state).await {
-            tracing::error!("RabbitMQ worker for ML Ranker crashed: {}", e);
+        let mut backoff = std::time::Duration::from_secs(2);
+        loop {
+            match rabbitmq::start_worker(worker_state.clone()).await {
+                Ok(()) => {
+                    tracing::warn!("RabbitMQ worker for ML Ranker disconnected, reconnecting in {:?}...", backoff);
+                }
+                Err(e) => {
+                    tracing::error!("RabbitMQ worker for ML Ranker crashed: {} - reconnecting in {:?}...", e, backoff);
+                }
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = std::cmp::min(backoff * 2, std::time::Duration::from_secs(30));
         }
     });
 

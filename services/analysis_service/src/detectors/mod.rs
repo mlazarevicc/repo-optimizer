@@ -1,6 +1,7 @@
 pub mod smells;
 pub mod performance;
 pub mod security;
+pub mod duplication;
 
 use crate::models::Problem;
 

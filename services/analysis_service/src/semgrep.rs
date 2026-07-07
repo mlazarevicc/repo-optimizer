@@ -1,10 +1,11 @@
 use crate::models::{Problem, Severity};
 use serde_json::Value;
-use std::{io::Write, process::Command};
+use std::{io::Write};
 use tempfile::Builder;
 use uuid::Uuid;
+use tokio::process::Command;
 
-pub fn run_scan(code: &str, language: &str, analysis_job_id: Uuid, file_path: Option<String>) -> Result<Vec<Problem>, String> {
+pub async fn run_scan(code: &str, language: &str, analysis_job_id: Uuid, file_path: Option<String>) -> Result<Vec<Problem>, String> {
     let ext = match language.to_lowercase().as_str() {
         "python" => ".py",
         "javascript" => ".js",
@@ -34,6 +35,7 @@ pub fn run_scan(code: &str, language: &str, analysis_job_id: Uuid, file_path: Op
         .arg("--disable-version-check") // Turn off internet version checking
         .arg(temp_path)
         .output()
+        .await
         .map_err(|e| format!("Failed to execute semgrep. Is it installed on the system? Error: {}", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -61,6 +63,8 @@ pub fn run_scan(code: &str, language: &str, analysis_job_id: Uuid, file_path: Op
                 .collect::<Vec<_>>()
                 .join("\n");
 
+            let autofix = res["extra"]["fix"].as_str().map(|s| s.to_string());
+
             problems.push(Problem {
                 id: Uuid::new_v4(),
                 analysis_job_id,
@@ -72,6 +76,9 @@ pub fn run_scan(code: &str, language: &str, analysis_job_id: Uuid, file_path: Op
                 code_snippet,
                 created_at: chrono::Utc::now(),
                 file_path: file_path.clone(),
+                language: language.to_string(),
+                autofix,
+                rank_score: None,
             });
         }
     }

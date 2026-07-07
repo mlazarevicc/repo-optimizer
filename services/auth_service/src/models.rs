@@ -3,6 +3,7 @@ use sqlx::FromRow;
 use uuid::Uuid;
 
 #[derive(Debug, FromRow)]
+#[allow(dead_code)]
 pub struct User {
     pub id: Uuid,
     pub email: String,

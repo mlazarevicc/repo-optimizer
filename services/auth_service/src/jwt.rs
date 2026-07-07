@@ -5,6 +5,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum JwtError {
+    #[allow(dead_code)]
     #[error("Invalid token")]
     InvalidToken,
     #[error("Token creation error")]
@@ -34,6 +35,7 @@ pub fn create_jwt(user_id: &str, email: &str) -> Result<String, JwtError> {
     .map_err(|_| JwtError::TokenCreation)
 }
 
+#[allow(dead_code)]
 pub fn verify_jwt(token: &str) -> Result<Claims, JwtError> {
     let secret = env::var("JWT_SECRET").unwrap_or_else(|_| "dev_secret".to_string());
 

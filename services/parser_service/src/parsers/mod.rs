@@ -1,8 +1,11 @@
 pub mod python;
 pub mod javascript;
+pub mod rust;
+pub mod java;
+pub mod go;
 
 use crate::models::{ClassInfo, CodeMetrics, FunctionInfo, Language};
-use tree_sitter::{Parser, Tree};
+use tree_sitter::Tree;
 
 pub trait LanguageParser {
     fn parse_code(&mut self, code: &str) -> Result<Tree, String>;
@@ -14,8 +17,13 @@ pub trait LanguageParser {
 pub fn get_parser(language: &Language) -> Box<dyn LanguageParser + Send> {
     match language {
         Language::Python => Box::new(python::PythonParser::new()),
+        // TypeScript privremeno koristi JS gramatiku (tree-sitter-typescript
+        // grammar je u Cargo.toml ali nije ozicen - dovoljno dobar fallback
+        // za sad jer je TS sintaksicki superset JS-a za nase potrebe metrika).
         Language::JavaScript | Language::TypeScript => Box::new(javascript::JavaScriptParser::new()),
-        _ => Box::new(python::PythonParser::new()),
+        Language::Rust => Box::new(rust::RustParser::new()),
+        Language::Java => Box::new(java::JavaParser::new()),
+        Language::Go => Box::new(go::GoParser::new()),
     }
 }
 

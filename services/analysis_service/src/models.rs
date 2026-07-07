@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use std::fmt;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
     Python,
@@ -10,6 +10,7 @@ pub enum Language {
     TypeScript,
     Rust,
     Java,
+    Go,
 }
 
 impl fmt::Display for Language {
@@ -20,6 +21,7 @@ impl fmt::Display for Language {
             Language::TypeScript => write!(f, "typescript"),
             Language::Rust => write!(f, "rust"),
             Language::Java => write!(f, "java"),
+            Language::Go => write!(f, "go"),
         }
     }
 }
@@ -45,7 +47,7 @@ pub enum ProblemType {
     XssVulnerability,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     Critical,
@@ -77,6 +79,11 @@ pub struct Problem {
     pub code_snippet: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub file_path: Option<String>,
+    pub language: String, 
+    pub autofix: Option<String>,
+    // Popunjava ml_ranker_service nakon rangiranja (update_one); pre toga je None.
+    #[serde(default)]
+    pub rank_score: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

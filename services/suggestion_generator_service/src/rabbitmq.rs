@@ -1,8 +1,9 @@
 use crate::AppState;
 use futures_lite::stream::StreamExt;
 use lapin::{options::*, types::FieldTable, Connection, ConnectionProperties};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
+use tokio::sync::Semaphore;
 use std::{env, sync::Arc};
 use uuid::Uuid;
 
@@ -29,10 +30,13 @@ pub async fn start_worker(state: Arc<AppState>) -> Result<(), lapin::Error> {
         .await?;
 
     tracing::info!("Suggestion Generator worker listening on 'suggest_queue'...");
+    let semaphore = Arc::new(Semaphore::new(20));
 
     while let Some(delivery) = consumer.next().await {
         if let Ok(delivery) = delivery {
             let state_clone = state.clone();
+
+            let _permit = semaphore.clone().acquire_owned().await.unwrap();
 
             tokio::spawn(async move {
                 let payload: Result<SuggestJob, _> = serde_json::from_slice(&delivery.data);

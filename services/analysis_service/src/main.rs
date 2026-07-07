@@ -1,4 +1,5 @@
 mod detectors;
+mod dedup;
 mod models;
 mod rabbitmq; 
 mod semgrep;
@@ -8,11 +9,12 @@ use detectors::{
     performance::PerformanceDetector, 
     security::SecurityDetector, 
     smells::SmellDetector, 
+    duplication::DuplicationDetector,
     Detector
 };
-use models::{ParsedAst, Problem, Severity};
+use models::{ParsedAst, Problem};
 use mongodb::{
-    bson::{doc, Binary, Bson},
+    bson::{doc, Binary},
     Client, 
     Collection
 };
@@ -23,6 +25,9 @@ use std::{env, sync::Arc};
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
+use mongodb::options::{ClientOptions, IndexOptions};
+use mongodb::IndexModel;
+use std::time::Duration;
 
 pub struct AppState {
     pub parsed_asts: Collection<ParsedAst>,
@@ -46,7 +51,8 @@ pub async fn process_analysis(
     state: &Arc<AppState>,
     analysis_job_id: Uuid,
     file_path: Option<String>,
-    user_id: Option<String>,
+    _user_id: Option<String>,
+    req_language: Option<String>,
 ) -> Result<Vec<Value>, String> {
     
     let uuid_bytes = analysis_job_id.into_bytes();
@@ -72,7 +78,11 @@ pub async fn process_analysis(
         None => return Err(format!("AST not found for analysis_job_id: {}", analysis_job_id)),
     };
 
+    let lang_str = req_language.unwrap_or_else(|| ast.language.to_string());
     let mut problems = Vec::new();
+
+    let mut semgrep_problems = semgrep::run_scan(&ast.code, &lang_str, analysis_job_id, file_path.clone()).await?;
+    problems.append(&mut semgrep_problems);
 
     let smell_detector = SmellDetector::new();
     problems.extend(smell_detector.detect(&ast));
@@ -83,9 +93,12 @@ pub async fn process_analysis(
     let sec_detector = SecurityDetector::new();
     problems.extend(sec_detector.detect(&ast));
 
-    if let Ok(semgrep_issues) = crate::semgrep::run_scan(&ast.code, &ast.language.to_string(), analysis_job_id, ast.file_path.clone()) {
-        problems.extend(semgrep_issues);
-    }
+    let dup_detector = DuplicationDetector::new();
+    problems.extend(dup_detector.detect(&ast));
+
+    // Semgrep ("p/default") i nasi detektori (security/smells/performance) mogu prijaviti
+    // ISTU stvar na istoj liniji (npr. hardkodovan password) - skloni duplikate pre upisa.
+    let problems = dedup::dedupe_problems(problems);
 
     if !problems.is_empty() {
         state.problems_collection.insert_many(problems.clone()).await
@@ -111,8 +124,33 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let mongodb_url = env::var("MONGODB_URL").expect("MONGODB_URL must be set");
-    let client = Client::with_uri_str(&mongodb_url).await?;
+    
+    // 1. Konfiguracija Connection Pool-a i Timeout-a
+    let mut client_options = ClientOptions::parse(&mongodb_url).await?;
+    client_options.max_pool_size = Some(200); // Dozvoljavamo do 200 paralelnih konekcija
+    client_options.min_pool_size = Some(10);
+    client_options.connect_timeout = Some(Duration::from_secs(10));
+    client_options.server_selection_timeout = Some(Duration::from_secs(10));
+    client_options.retry_writes = Some(true); // Baza sama pokušava ponovo ako pukne
+    client_options.retry_reads = Some(true);
+
+    let client = Client::with_options(client_options)?;
     let mongodb = client.database("repo_optimizer");
+
+    let parsed_asts = mongodb.collection::<ParsedAst>("parsed_asts");
+    let _problems_collection = mongodb.collection::<Problem>("problems");
+
+    // 2. KREIRANJE INDEKSA (Ključno za brzinu pretrage)
+    let index_model = IndexModel::builder()
+        .keys(doc! { "analysis_job_id": 1 }) // Pravimo brzi pretraživač za ovaj ID
+        .options(IndexOptions::builder().background(true).build())
+        .build();
+        
+    if let Err(e) = parsed_asts.create_index(index_model).await {
+        tracing::warn!("Failed to create index for parsed_asts: {}", e);
+    } else {
+        tracing::info!("MongoDB Index for 'analysis_job_id' created/verified.");
+    }
 
     let parsed_asts = mongodb.collection::<ParsedAst>("parsed_asts");
     let problems_collection = mongodb.collection::<Problem>("problems");
@@ -126,8 +164,18 @@ async fn main() -> anyhow::Result<()> {
 
     let worker_state = state.clone();
     tokio::spawn(async move {
-        if let Err(e) = rabbitmq::start_worker(worker_state).await {
-            tracing::error!("RabbitMQ worker for analysis crashed: {}", e);
+        let mut backoff = std::time::Duration::from_secs(2);
+        loop {
+            match rabbitmq::start_worker(worker_state.clone()).await {
+                Ok(()) => {
+                    tracing::warn!("RabbitMQ worker for analysis disconnected, reconnecting in {:?}...", backoff);
+                }
+                Err(e) => {
+                    tracing::error!("RabbitMQ worker for analysis crashed: {} - reconnecting in {:?}...", e, backoff);
+                }
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = std::cmp::min(backoff * 2, std::time::Duration::from_secs(30));
         }
     });
 

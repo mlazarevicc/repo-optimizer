@@ -8,6 +8,7 @@ use models::{RankedProblemPayload, Suggestion};
 use mongodb::{Client, Collection};
 use serde::Serialize;
 use serde_json::Value;
+use sqlx::PgPool;
 use std::{env, sync::Arc};
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
@@ -18,7 +19,9 @@ use mongodb::bson::spec::BinarySubtype;
 pub struct AppState {
     pub suggestion_engine: SuggestionEngine,
     pub suggestions_collection: Collection<Suggestion>,
-    pub job_status_collection: Collection<mongodb::bson::Document>
+    // Status/napredak posla zivi u Postgres `analysis_jobs` (izvor istine - ima FK na users
+    // pa moze da se proveri vlasnistvo); Mongo cuva samo same Suggestion/Problem podatke.
+    pub pg_pool: PgPool,
 }
 
 #[derive(Serialize)]
@@ -92,23 +95,31 @@ pub async fn process_suggestions(
         }
     }
 
-    let uuid_bytes = analysis_job_id.into_bytes();
-    let query = doc! { 
-        "analysis_job_id": Binary { 
-            subtype: BinarySubtype::Generic, 
-            bytes: uuid_bytes.to_vec() 
-        } 
-    };
-    
-    let update = doc! {
-        "$inc": { "processed_files": 1 },
-        "$set": { "last_updated": chrono::Utc::now().to_rfc3339() }
-    };
-    
-    state.job_status_collection
-        .update_one(query, update)
-        .await
-        .map_err(|e| format!("Failed to update job status: {}", e))?;
+    // Azuriraj napredak posla u Postgres (izvor istine za status/vlasnistvo) umesto u Mongo.
+    // Kad processed_files dostigne total_files, posao prelazi u 'completed'.
+    let result = sqlx::query(
+        r#"
+        UPDATE analysis_jobs
+        SET processed_files = processed_files + 1,
+            status = CASE
+                WHEN processed_files + 1 >= total_files THEN 'completed'
+                ELSE 'processing'
+            END,
+            completed_at = CASE
+                WHEN processed_files + 1 >= total_files THEN NOW()
+                ELSE completed_at
+            END
+        WHERE id = $1
+        "#
+    )
+    .bind(analysis_job_id)
+    .execute(&state.pg_pool)
+    .await
+    .map_err(|e| format!("Failed to update job status in Postgres: {}", e))?;
+
+    if result.rows_affected() == 0 {
+        tracing::warn!("analysis_jobs row not found for job {} (status update had no effect)", analysis_job_id);
+    }
 
     tracing::info!("Incremented processed_files for job {}", analysis_job_id);
 
@@ -131,7 +142,10 @@ async fn main() -> anyhow::Result<()> {
     let mongodb = db_client.database("repo_optimizer");
     
     let suggestions_collection = mongodb.collection::<Suggestion>("suggestions");
-    let job_status_collection = mongodb.collection::<mongodb::bson::Document>("job_status");
+
+    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let pg_pool = PgPool::connect(&database_url).await?;
+    tracing::info!("Connected to Postgres for job-status updates");
 
     let suggestion_engine = SuggestionEngine::new();
     tracing::info!("Suggestion Generator Service initialized");
@@ -139,13 +153,23 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState { 
         suggestion_engine,
         suggestions_collection,
-        job_status_collection,
+        pg_pool,
     });
 
     let worker_state = state.clone();
     tokio::spawn(async move {
-        if let Err(e) = rabbitmq::start_worker(worker_state).await {
-            tracing::error!("RabbitMQ worker for Suggestion Generator crashed: {}", e);
+        let mut backoff = std::time::Duration::from_secs(2);
+        loop {
+            match rabbitmq::start_worker(worker_state.clone()).await {
+                Ok(()) => {
+                    tracing::warn!("RabbitMQ worker for Suggestion Generator disconnected, reconnecting in {:?}...", backoff);
+                }
+                Err(e) => {
+                    tracing::error!("RabbitMQ worker for Suggestion Generator crashed: {} - reconnecting in {:?}...", e, backoff);
+                }
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = std::cmp::min(backoff * 2, std::time::Duration::from_secs(30));
         }
     });
 
