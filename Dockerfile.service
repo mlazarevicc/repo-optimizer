@@ -1,0 +1,69 @@
+# Generican Dockerfile za 5 od 6 servisa (sve OSIM analysis_service - za njega
+# postoji Dockerfile.analysis_service, jer njemu treba i semgrep CLI u runtime image-u).
+#
+# Build primer:
+#   docker build -f Dockerfile.service --build-arg SERVICE_NAME=auth_service -t repo-optimizer/auth_service .
+#
+# NAPOMENA O MEMORIJI: `cargo build --release` je memorijski zahtevan
+# (sqlx-macros, mongodb, tree-sitter native build...). Ako pokrenete
+# `docker compose up -d --build`, Compose/Bake gradi SVIH 6 servisa
+# PARALELNO po default-u sto lako preplavi memoriju na laptopu (OOM/"Killed").
+# Zato ovde ogranicavamo `--jobs 2` (manje paralelnih rustc procesa PO
+# servisu), ali to nije dovoljno samo - PREPORUKA je da i same image-e
+# gradite SEKVENCIJALNO (`docker compose build <ime_servisa>` jedan po jedan),
+# ne `--build` flag na `up` koji gradi sve odjednom. Vidi objašnjenje u chatu.
+
+# NAPOMENA: koristimo "1" (floating tag) umesto fiksnog broja verzije.
+# Razlog: crates.io zavisnosti (npr. mongodb, hickory-resolver, darling...)
+# redovno dizu minimalnu potrebnu rustc verziju (MSRV), pa fiksni broj ovde
+# (1.76, pa 1.85...) je vec dvaput "istrulio" za par meseci. "1-bookworm" je
+# zvanicni Docker Hub floating tag koji uvek prati NAJNOVIJI stabilni Rust
+# 1.x - u kombinaciji sa commit-ovanim Cargo.lock (vidi ispod) ovo daje i
+# stabilnost verzija zavisnosti I dovoljno nov kompajler bez rucnog podizanja
+# broja svaki put.
+FROM rust:1-bookworm AS builder
+
+WORKDIR /app
+
+# 1) Kopiramo SAMO Cargo.toml/Cargo.lock fajlove. Workspace resolver mora da vidi
+#    Cargo.toml SVIH clanova da izracuna graf zavisnosti, makar gradili samo jedan
+#    paket - zato kopiramo sve, ali jos bez izvornog koda (src/).
+COPY Cargo.toml Cargo.lock* ./
+COPY services/auth_service/Cargo.toml services/auth_service/Cargo.toml
+COPY services/parser_service/Cargo.toml services/parser_service/Cargo.toml
+COPY services/analysis_service/Cargo.toml services/analysis_service/Cargo.toml
+COPY services/ml_ranker_service/Cargo.toml services/ml_ranker_service/Cargo.toml
+COPY services/suggestion_generator_service/Cargo.toml services/suggestion_generator_service/Cargo.toml
+COPY services/api_gateway/Cargo.toml services/api_gateway/Cargo.toml
+
+# 2) Lazni main.rs za SVAKI servis - samo da cargo build uspe da resolvuje
+#    workspace i da prevede ZAVISNOSTI (ne nas kod, on jos nije kopiran).
+RUN for d in auth_service parser_service analysis_service ml_ranker_service suggestion_generator_service api_gateway; do \
+        mkdir -p services/$d/src && echo "fn main() {}" > services/$d/src/main.rs; \
+    done
+
+ARG SERVICE_NAME
+
+# 3) Build SAMO zavisnosti za nas servis. Ovaj layer ostaje keširan sve dok se
+#    ne promeni neki Cargo.toml/Cargo.lock - sto je najsporiji deo build-a.
+RUN cargo build --release -p ${SERVICE_NAME} --jobs 2
+
+# 4) Tek sad ubacujemo PRAVI izvorni kod i ponovo gradimo - rekompajlira se
+#    samo nas kod, zavisnosti su vec keširane iz prethodnog koraka.
+COPY services/${SERVICE_NAME}/src ./services/${SERVICE_NAME}/src
+RUN touch services/${SERVICE_NAME}/src/main.rs && \
+    cargo build --release -p ${SERVICE_NAME} --jobs 2
+
+# ---- Runtime stage ----
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+ARG SERVICE_NAME
+COPY --from=builder /app/target/release/${SERVICE_NAME} /usr/local/bin/service
+
+ENV RUST_LOG=info
+CMD ["service"]
