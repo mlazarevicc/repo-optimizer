@@ -1,290 +1,202 @@
 # RepoOptimizer
 
-> 🚀 Distributed Code Optimization Platform with Multi-Language Support, Static Analysis, and ML-Powered Suggestions
+> Distribuirana platforma za statičku analizu i optimizaciju koda, sa podrškom za više programskih jezika
 
-**Status**: Active Development | **Language**: Rust | **License**: MIT
-
----
-
-## 📋 Table of Contents
-
-- [Overview](#overview)
-- [Features](#features)
-- [Architecture](#architecture)
-- [Technologies](#technologies)
-- [License](#license)
+**Status**: Aktivan razvoj | **Jezik**: Rust | **Licenca**: MIT
 
 ---
 
-## Overview
+## Sadržaj
 
-**RepoOptimizer** is a distributed system designed to automate code analysis and optimization across multiple programming languages. The platform helps developers quickly identify and fix code issues, focusing on what truly matters:
-
-- **Performance bottlenecks**: N+1 loops, inefficient algorithms, memory leaks
-- **Security vulnerabilities**: SQL injection, missing input validation, hard-coded credentials
-- **Code smells**: Long methods, large classes, duplicated code, deep nesting
-- **Best practices**: Naming conventions, documentation, error handling, test coverage
-
-### The Problem We Solve
-
-Developers spend hours manually reviewing code for quality issues. Existing tools are:
-- ❌ Language-specific (not universal)
-- ❌ Expensive (SaaS pricing models)
-- ❌ Hard to integrate (complex configurations)
-- ❌ Lacking actionable suggestions (just "there's a problem")
-
-**RepoOptimizer** solves this with:
-- ✅ Multi-language support (Python, JavaScript, Go, Java, Rust, and more)
-- ✅ Affordable/free (open source + low-cost SaaS)
-- ✅ Easy integration (CLI tool + Web UI + API)
-- ✅ Precise suggestions (before/after code examples with explanations)
+- [Pregled](#pregled)
+- [Funkcionalnosti](#funkcionalnosti)
+- [Arhitektura](#arhitektura)
+- [Tehnologije](#tehnologije)
+- [Trenutno stanje implementacije](#trenutno-stanje-implementacije)
+- [Pravci daljeg razvoja](#pravci-daljeg-razvoja)
 
 ---
 
-## Features
+## Pregled
 
-### 🎯 Core Features (Project Phase)
+**RepoOptimizer** je distribuirani sistem za automatizovanu statičku analizu koda kroz više programskih jezika. Cilj platforme je da programerima brzo ukaže na probleme u kodu koji najviše utiču na kvalitet i održivost projekta:
 
-#### Multi-Language Code Parsing
-- **Python**: PEP 8 violations, idiom detection
-- **JavaScript/TypeScript**: ES6+ patterns, async issues
-- **Go**: Idiomatic patterns, error handling
-- **Java**: OOP patterns, resource management
-- **Rust**: Memory safety, borrowing violations (educational)
+- **Performanse**: neefikasni algoritmi, N+1 problemi, nepotrebno kopiranje/alokacije
+- **Bezbednost**: SQL injekcije, nedostatak validacije ulaza, hard-kodovani kredencijali
+- **Code smell obrasci**: predugačke metode, duboko ugnježdavanje, duplirani kod
+- **Dobre prakse**: konvencije imenovanja, kompleksnost funkcija, nedostatak dokumentacije
 
-#### Static Analysis Engine
-- **Code Smell Detection**:
-  - Long methods (>20 lines)
-  - Large classes (>50 methods)
-  - Unused variables/imports
-  - Magic numbers
-  - Deep nesting (>4 levels)
-  - Duplicated code blocks
-  - God classes & Feature envy
+### Problem koji se rešava
 
-- **Performance Issues**:
-  - N+1 loops
-  - Inefficient algorithms (O(n²) where O(n log n) is possible)
-  - Memory leaks (retained references)
-  - Inefficient string operations
+Ručni code review je vremenski zahtevan, a postojeći alati su često vezani za jedan jezik, kompleksni za integraciju ili daju samo generičko upozorenje bez konkretnog predloga rešenja. RepoOptimizer pokušava da ovo prevaziđe kroz:
 
-- **Security Issues**:
-  - SQL injection vulnerabilities
-  - Missing input validation
-  - Hard-coded credentials
-  - Insecure random generation
-  - Missing CSRF protection
-
-- **Style & Best Practices**:
-  - Naming conventions
-  - Function complexity scoring
-  - Missing documentation
-  - Error handling coverage
-  - Test coverage gaps
-
-#### ML-Powered Ranking
-- **XGBoost Model** for prioritizing problems by impact
-- **Severity Classification**: Critical, High, Medium, Low
-- **Impact Scoring**: How much will fixing this improve the codebase?
-- **Model Versioning** for consistency
-
-#### Suggestion Generation
-- **Before/After Code Examples**: Exact how to fix the problem
-- **Detailed Explanations**: Why it's an issue and how fixing helps
-- **Language-Specific Suggestions**: Pythonic vs Rustic patterns
-- **Safe Refactoring**: Never breaks functionality
-
-#### Web UI & CLI
-- **Web IDE**: Browser-based code analysis with syntax highlighting
-- **CLI Tool**: `repo-optimizer analyze myproject/` for quick local analysis
-- **API Gateway**: REST API for programmatic access
-- **Real-time Feedback**: See issues as you code (optional)
+- podršku za više jezika kroz zajednički Tree-sitter sloj za parsiranje,
+- jednostavnu integraciju (Web UI, u planu i CLI),
+- konkretne predloge ispravki, a ne samo listu problema.
 
 ---
 
-## Architecture
+## Funkcionalnosti
 
-### System Overview
+### Parsiranje koda (Tree-sitter)
+
+Parser servis generiše AST za svaki podržani jezik: **Python, JavaScript, Go, Java i Rust**. AST se čuva u MongoDB i predstavlja osnovu za dalju analizu.
+
+### Statička analiza
+
+Analysis servis nad AST-om primenjuje skup pravila organizovanih u četiri kategorije:
+
+- **Code smells**: duge metode, velike klase, duboko ugnježdavanje, duplirani blokovi koda
+- **Performanse**: neefikasne petlje, sumnjiva vremenska složenost
+- **Bezbednost**: SQL injekcije, hard-kodovani kredencijali, nedostatak validacije ulaza
+- **Stil**: konvencije imenovanja, osnovna kompleksnost funkcija
+
+Skup pravila trenutno nije podjednako razvijen za sve jezike (npr. detekcija SQL injekcije za Javu je u planu, ali još nije implementirana). Tamo gde se preklapaju rezultati Semgrep-a i internih detektora, primenjuje se deduplikacija kako korisnik ne bi video duplirane nalaze.
+
+### Rangiranje problema
+
+ML Ranker servis dodeljuje težinu (severity) svakom pronađenom problemu na osnovu njegovog tipa, po heurističkom, pravilima definisanom modelu (rule-based baseline). Rezultati se keširaju u Redisu radi bržeg ponovnog pristupa. Zamena ovog modela pravim ML modelom (npr. XGBoost/ONNX) je navedena kao mogući pravac daljeg razvoja, ne kao trenutna funkcionalnost.
+
+### Generisanje predloga
+
+Suggestion Generator servis, na osnovu tipa detektovanog problema, generiše predlog ispravke korišćenjem unapred definisanih (deterministic) templejta po jeziku i tipu problema. Predlozi su namerno jednostavni i predvidivi — ne koriste se LLM modeli niti kompleksno parsiranje konteksta.
+
+### Web interfejs
+
+React/Vite aplikacija sa Tailwind stilizacijom omogućava registraciju i prijavu korisnika, pokretanje analize i pregled rezultata (Dashboard, Login, Register, Result stranice), uz CodeMirror prikaz koda sa isticanjem sintakse.
+
+---
+
+## Arhitektura
+
+### Pregled sistema
 
 ```
-User Input
+Web UI
     ↓
-API Gateway (REST API + Auth)
+API Gateway (Actix-web, REST API, JWT middleware)
     ↓
-RabbitMQ/Kafka (Job Queue)
+RabbitMQ (asinhrona komunikacija između servisa)
     ↓
-Parser Service
-(Tree-sitter Multi-lang AST)
+Parser Service (Tree-sitter → AST)
     ↓
-Analysis Service
-(Detects Problems)
+Analysis Service (statička analiza nad AST-om)
     ↓
-ML Ranker Service
-(XGBoost Ranking)
+ML Ranker Service (rangiranje po težini)
     ↓
-Suggestion Generator Service
-(Generates Fixes)
+Suggestion Generator Service (generisanje predloga)
     ↓
-Database (PostgreSQL + MongoDB)
+API Gateway (agregacija i vraćanje rezultata)
     ↓
-API Gateway (Returns Results)
-    ↓
-Frontend/CLI (User Output)
+Web UI (prikaz rezultata)
 ```
 
-### Microservices Architecture
+### Mikroservisi
 
-| Service | Responsibility | Tech Stack | Database |
-|---------|----------------|-----------|----------|
-| **Auth_Service** | User management, JWT tokens, OAuth | Actix-web, JWT | PostgreSQL |
-| **Parser_Service** | Multi-language AST parsing | Tree-sitter, Tokio | MongoDB |
-| **Analysis_Service** | Static code analysis, metrics | Custom rules, Tokio | PostgreSQL |
-| **ML_Ranker_Service** | Problem prioritization | XGBoost, ONNX Runtime | Redis (cache) |
-| **Suggestion_Generator_Service** | Generate fix suggestions | Template engine, LLM-ready | MongoDB |
-| **API_Gateway** | REST API, rate limiting, composition | Actix-web, JWT middleware | N/A |
+| Servis | Odgovornost | Tehnologije | Baza podataka |
+|---|---|---|---|
+| **Auth Service** | Registracija, prijava, JWT tokeni | Actix-web, JWT | PostgreSQL |
+| **Parser Service** | Parsiranje koda u AST za više jezika | Tree-sitter, Tokio | MongoDB |
+| **Analysis Service** | Statička analiza, detekcija problema | Custom pravila, Semgrep, Tokio | PostgreSQL |
+| **ML Ranker Service** | Rangiranje problema po težini | Rule-based baseline | Redis (keš) |
+| **Suggestion Generator Service** | Generisanje predloga ispravki | Template engine | MongoDB |
+| **API Gateway** | REST API, autentikacija, kompozicija odgovora | Actix-web, JWT middleware | — |
 
-### Data Flow
+Svi servisi komuniciraju asinhrono preko RabbitMQ, što omogućava nezavisno skaliranje i otpornost na privremeni pad pojedinačnog servisa.
+
+### Tok podataka
 
 ```
-CLI/Web UI
-    ↓
-[Upload Code] → API_Gateway (authenticate)
-    ↓
-RabbitMQ: Create "analyze_code" job
-    ↓
-Parser_Service: Parse into AST
-    ↓ (AST → MongoDB)
-Analysis_Service: Run detection rules
-    ↓ (Problems → PostgreSQL)
-ML_Ranker_Service: Score & prioritize
-    ↓ (Scores → MongoDB)
-Suggestion_Generator_Service: Create fixes
-    ↓ (Suggestions → MongoDB)
-API_Gateway: Return to user
-    ↓
-Web UI / CLI: Display results
+Web UI → API Gateway (autentikacija)
+       → RabbitMQ: kreiranje "analyze_code" posla
+       → Parser Service: generisanje AST-a (→ MongoDB)
+       → Analysis Service: primena pravila (→ PostgreSQL)
+       → ML Ranker Service: rangiranje po težini (→ Redis keš)
+       → Suggestion Generator Service: generisanje predloga (→ MongoDB)
+       → API Gateway: agregacija rezultata
+       → Web UI: prikaz korisniku
 ```
 
 ---
 
-## Technologies
+## Tehnologije
 
-### Backend Stack
-- **Language**: Rust
-- **Web Framework**: Actix-web (fast, reliable)
-- **Async Runtime**: Tokio (non-blocking I/O)
-- **Serialization**: Serde (JSON/binary)
-- **Database Client**: SQLx (PostgreSQL), MongoDB driver
+### Backend
+- **Jezik**: Rust
+- **Web framework**: Actix-web
+- **Asinhroni runtime**: Tokio
+- **Serijalizacija**: Serde
+- **Pristup bazama**: SQLx (PostgreSQL), zvanični MongoDB drajver
 
-### Data Processing
-- **Code Parsing**: Tree-sitter (supports 15+ languages)
-- **AST Analysis**: Custom walkers and pattern matchers
-- **Job Queue**: RabbitMQ or Kafka (async processing)
-- **Caching**: Redis (frequently accessed results)
-
-### Machine Learning
-- **Inference Framework**: ONNX Runtime (lightweight, fast)
-- **ML Model**: XGBoost (problem ranking)
-- **Feature Engineering**: Code metrics → model input
+### Obrada podataka
+- **Parsiranje koda**: Tree-sitter
+- **Message broker**: RabbitMQ
+- **Keširanje**: Redis
 
 ### Frontend
 - **Framework**: React 18+
-- **Code Editor**: CodeMirror 6 (syntax highlighting, themes)
-- **Charts**: Recharts (visualize issues distribution)
-- **HTTP Client**: Axios (API communication)
-- **Build Tool**: Vite (fast development)
+- **Editor koda**: CodeMirror 6
+- **Build alat**: Vite
+- **Stilizacija**: Tailwind CSS
+- **HTTP klijent**: Axios
 
 ### DevOps
-- **Containerization**: Docker
-- **Orchestration**: Docker Compose (dev), Kubernetes (diplomski)
-- **Database**: PostgreSQL + MongoDB
-- **Message Queue**: RabbitMQ or Kafka
+- **Kontejnerizacija**: Docker, Docker Compose
+- **Orkestracija**: Docker Compose za lokalno pokretanje i demonstraciju
 
-### Quality Assurance
-- **Testing**: Rust's built-in test framework
-- **CLI Tool**: Clap (command-line parsing)
-- **Documentation**: cargo doc, MkDocs
+### Kvalitet koda
+- **Testiranje**: Rust-ov ugrađeni test framework (62 jedinična testa)
+- **Dokumentacija**: cargo doc
 
 ---
 
-## Future Enhancements
+## Trenutno stanje implementacije
 
-### Phase 1: LLM Integration (Code Generation)
-```
-✨ NEW: LLM_Fixer_Service (Service 7)
-- Integrate with OpenAI GPT-4 or Llama 2
-- Auto-generate refactored code (not just suggestions)
-- Generate unit tests based on detected issues
-- Verify generated code doesn't break existing tests
-- Human review workflow before applying changes
-```
+Radi transparentnosti, ovde je pregled šta je od navedenih funkcionalnosti zaista implementirano u trenutnoj fazi projekta:
 
-### Phase 2: Automated Testing Integration
-```
-✨ NEW: Testing Service
-- Auto-generate unit tests for problematic code
-- Verify refactoring doesn't break tests
-- Code coverage analysis and gaps
-- Test quality scoring
-- Mutation testing for test quality
-```
-
-### Phase 3: Resilience
-```
-🛡️ Circuit Breaker: Prevent cascading failures
-🛡️ Bulkhead: Isolate critical paths
-🛡️ Timeout: Prevent hanging requests
-```
-
-### Phase 4: Performance Optimization
-```
-⚡ Caching Strategy: Redis intelligent caching
-⚡ Batch Processing: Analyze multiple files in parallel
-⚡ Database Indexing: Optimize query performance
-⚡ Kubernetes Deployment: Full orchestration with auto-scaling
-```
+| Deo sistema | Status |
+|---|---|
+| API Gateway (rute, JWT middleware) | ✅ Implementirano |
+| API Gateway — rate limiting | ⏳ Nije implementirano |
+| Auth Service (JWT, PostgreSQL) | ✅ Implementirano |
+| Parser Service (Tree-sitter, MongoDB) | ✅ Implementirano |
+| Analysis Service (pravila, PostgreSQL) | ✅ Implementirano (nepotpun skup pravila po jeziku) |
+| ML Ranker — rule-based rangiranje + Redis keš | ✅ Implementirano |
+| ML Ranker — pravi ML model (XGBoost/ONNX) | ⏳ Nije implementirano (planirano kao budući rad) |
+| Suggestion Generator — deterministički templejti | ✅ Implementirano |
+| Suggestion Generator — LLM integracija | ⏳ Nije implementirano (budući rad) |
+| RabbitMQ komunikacija između servisa | ✅ Implementirano |
+| PostgreSQL i MongoDB | ✅ Konfigurisano i u upotrebi |
+| Web UI (Dashboard, Login, Register, Result) | ✅ Implementirano |
+| CLI alat | ⏳ U planu, sledeći korak razvoja |
+| Docker Compose (kompletan sistem, `docker compose up`) | ✅ Implementirano |
+| Kubernetes | 💭 Samo koncept za budući rad, ne koristi se u praksi |
 
 ---
 
-## Security Considerations
+## Pravci daljeg razvoja
 
-### Data Protection
-- ✅ HTTPS only
-- ✅ User code encrypted at rest
-- ✅ JWT tokens with expiration
-- ✅ SQL injection prevention (parameterized queries)
-- ✅ XSS prevention (input sanitization)
+Ovi pravci su navedeni kao mogući nastavak rada nakon odbrane, a ne kao deo trenutnog obima diplomskog rada:
 
-### Credential Management
-- ✅ API keys stored securely
-- ✅ GitHub tokens in environment variables
-- ✅ No secrets in git history
-- ✅ Regular security audits
-
-### Compliance
-- ✅ GDPR data deletion on request
-- ✅ Data residency options
-- ✅ Audit logging
-- ✅ SOC 2 compliance (enterprise)
+- **CLI alat** — `repo-optimizer analyze <putanja>` za lokalnu analizu bez Web UI-ja (sledeći planirani korak)
+- **Proširenje pravila analize** — dodatna pravila po jeziku (npr. SQL injekcija za Javu), radi ujednačavanja pokrivenosti
+- **Pravi ML model za rangiranje** — zamena rule-based pristupa treniranim modelom (npr. XGBoost) na osnovu skupa obeleženih problema
+- **LLM integracija za generisanje predloga** — kao mogućnost za naprednije, kontekstualne predloge ispravki umesto fiksnih templejta
+- **Rate limiting na API Gateway-u**
+- **Kubernetes orkestracija** — kao koncept skaliranja za produkcioni scenario, van okvira lokalnog demoa
 
 ---
 
-## License
+## Bezbednost (trenutno stanje)
 
-This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
+- JWT tokeni za autentikaciju korisnika
+- Parametrizovani upiti u bazu radi sprečavanja SQL injekcija u okviru samog sistema
+- Kredencijali i konfiguracija se čuvaju kroz environment varijable, ne u kodu
 
----
-
-## Changelog
-
-### Version 0.1.0 (Planning Phase)
-- 📋 Project specification complete
-- 🎯 Microservices architecture designed
-- 📚 Documentation prepared
-- 🚀 Ready for development
+Napredne teme poput HTTPS terminacije, enkripcije podataka u mirovanju, GDPR i SOC 2 usklađenosti nisu deo trenutne implementacije i namerno su izostavljene iz opisa kako bi README odražavao realno stanje projekta.
 
 ---
 
-**Made with ❤️ by Milan Lazarevic**
+**Autor: Milan Lazarevic**
 
-Last Updated: December 30, 2025
+Poslednja izmena: Jul 2026
