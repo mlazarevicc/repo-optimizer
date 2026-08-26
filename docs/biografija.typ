@@ -1,0 +1,3 @@
+= Биографија
+
+Milan Lazarević osnovne akademske studije na smeru Softversko inženjerstvo i informacione tehnologije upisao je 2022. godine na Fakultetu tehničkih nauka u Novom Sadu, koje završava 2026. godine izradom ovog rada. Tokom studija se posebno interesovao za distribuirane sisteme, što je uticalo i na izbor teme završnog rada — projektovanje i implementaciju mikroservisne platforme za statičku analizu izvornog koda.
