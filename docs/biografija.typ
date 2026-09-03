@@ -1,3 +1,8 @@
 = Биографија
 
-Milan Lazarević osnovne akademske studije na smeru Softversko inženjerstvo i informacione tehnologije upisao je 2022. godine na Fakultetu tehničkih nauka u Novom Sadu, koje završava 2026. godine izradom ovog rada. Tokom studija se posebno interesovao za distribuirane sisteme, što je uticalo i na izbor teme završnog rada — projektovanje i implementaciju mikroservisne platforme za statičku analizu izvornog koda.
+Милан Лазаревић основне академске студије на смеру Софтверско инжењерство и
+информационе технологије уписао је 2022. године на Факултету техничких наука у
+Новом Саду, које завршава 2026. године израдом овог рада. Током студија се
+посебно интересовао за дистрибуиране системе, што је утицало и на избор теме
+завршног рада — пројектовање и имплементацију микросервисне платформе за
+статичку анализу изворног кода.
