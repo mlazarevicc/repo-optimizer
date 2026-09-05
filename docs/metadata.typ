@@ -21,13 +21,13 @@
 
 #let godina = [#datetime.today().year()]
 
-#let kljucne_reci = "Шаблон, завршни рад, упутство"
+#let kljucne_reci = "статичка анализа кода, Rust, микросервиси, RabbitMQ, AST, Tree-sitter, детекција рањивости, Semgrep"
 #let apstrakt = [
     Овај рад представља RepoOptimizer — дистрибуирани систем за статичку анализу кода за шест програмских језика. Реализован кроз Rust микросервисе и RabbitMQ, систем користи Tree-sitter и Semgrep за аутоматску детекцију, рангирање и предлагање исправки за безбедносне пропусте, лоше праксе, дуплирање и перформансне проблеме. Функционалности су доступне преко Web и CLI интерфејса, а рад обухвата опис архитектуре, тестирање и правце даљег развоја.
 ]
 
 // На енглеском
-#let kljucne_reci_eng = "Template, thesis, tutorial"
+#let kljucne_reci_eng = "static code analysis, Rust, microservices, RabbitMQ, AST, Tree-sitter, vulnerability detection, Semgrep"
 #let apstrakt_eng = [
      This paper presents RepoOptimizer, a distributed static code analysis system for six programming languages. Implemented via Rust microservices and RabbitMQ, it leverages Tree-sitter and Semgrep to automatically detect, rank, and suggest fixes for security vulnerabilities, code smells, duplication, and performance issues. Accessible through Web and CLI interfaces, the paper outlines the system's architecture, testing approach, and future development directions.
 ]
